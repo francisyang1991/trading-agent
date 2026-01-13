@@ -1,0 +1,42 @@
+# SAIYAN Trading Agent - Docker Compose Configuration
+# Includes IBeam for IBKR Client Portal Web API authentication
+#
+# Usage:
+#   1. Create env.list with IBKR credentials (see env.example)
+#   2. Run: docker compose up -d
+#   3. Verify: curl -k https://localhost:5000/v1/api/iserver/auth/status
+
+services:
+  # IBeam - IBKR Authentication Gateway
+  # https://github.com/Voyz/ibeam
+  ibeam:
+    image: voyz/ibeam
+    container_name: saiyan-ibeam
+    env_file:
+      - env.list
+    ports:
+      - "5000:5000"   # Gateway HTTPS
+      - "5001:5001"   # Gateway HTTP (optional)
+    network_mode: bridge
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-k", "-f", "https://localhost:5000/v1/api/iserver/auth/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Optional: Trading Agent (uncomment to run in container)
+  # trading-agent:
+  #   build: .
+  #   container_name: saiyan-agent
+  #   depends_on:
+  #     ibeam:
+  #       condition: service_healthy
+  #   environment:
+  #     - IBKR_GATEWAY_URL=https://ibeam:5000
+  #   volumes:
+  #     - ./config:/app/config:ro
+  #     - ./logs:/app/logs
+  #     - ./data:/app/data
+  #   network_mode: bridge

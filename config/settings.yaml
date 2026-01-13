@@ -1,0 +1,202 @@
+# =============================================================================
+# SAIYAN Trading Agent - Main Configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# IBKR Connection Settings
+# -----------------------------------------------------------------------------
+ibkr:
+  host: "127.0.0.1"
+  port: 7497          # 7497 for TWS Paper, 7496 for TWS Live, 4001/4002 for Gateway
+  client_id: 1
+  readonly: false
+  timeout: 30
+
+# -----------------------------------------------------------------------------
+# Trading Parameters
+# -----------------------------------------------------------------------------
+trading:
+  mode: "paper"       # paper, live
+  currency: "USD"
+  
+  # Position Sizing
+  initial_position_pct: 0.05    # 5% initial position
+  add_position_pct: 0.05        # 5% per add
+  max_position_pct: 0.25        # 25% max per symbol
+  range_trade_max_pct: 0.05     # 5% max for B-type range trading
+  
+  # Minimum requirements
+  min_volume_ratio: 1.5         # Volume must be 1.5x average for signal
+  min_vpes_threshold: 0.005     # Minimum VPES for valid signal
+
+# -----------------------------------------------------------------------------
+# Timeframe Configuration
+# -----------------------------------------------------------------------------
+timeframes:
+  base: "5 mins"      # Base timeframe for data collection
+  analysis:
+    - "5 mins"
+    - "15 mins"
+    - "30 mins"
+    - "1 hour"
+    - "4 hours"
+    - "1 day"
+    - "1 week"
+  
+  # Timeframe weights for multi-timeframe confirmation
+  weights:
+    "5 mins": 0.1
+    "15 mins": 0.15
+    "30 mins": 0.15
+    "1 hour": 0.2
+    "4 hours": 0.2
+    "1 day": 0.15
+    "1 week": 0.05
+
+# -----------------------------------------------------------------------------
+# Technical Indicators
+# -----------------------------------------------------------------------------
+indicators:
+  # EMA Settings
+  ema:
+    fast: 20
+    slow: 50
+    trend: 200
+  
+  # VPES (Volume-Price Expansion Score)
+  vpes:
+    volume_ma_period: 20
+    smoothing_period: 3
+    
+  # ATR for volatility
+  atr:
+    period: 14
+    
+  # Volume
+  volume:
+    ma_period: 20
+    surge_multiplier: 2.0
+
+# -----------------------------------------------------------------------------
+# Stock Classification Parameters
+# -----------------------------------------------------------------------------
+classification:
+  # Type A: Trend stocks
+  trend:
+    min_rally_pct: 0.15         # 15% minimum prior rally
+    max_pullback_pct: 0.10      # 10% max pullback from high
+    lookback_days: 60
+    
+  # Type B: Range-bound stocks
+  range:
+    price_band_pct: 0.10        # Price oscillates within 10% band
+    lookback_days: 30
+    
+  # Type C: Reversal candidates
+  reversal:
+    downtrend_days: 90          # Minimum downtrend duration
+    ema_proximity_pct: 0.02     # 2% proximity to long-term EMA
+
+# -----------------------------------------------------------------------------
+# Signal Generation
+# -----------------------------------------------------------------------------
+signals:
+  # Entry requirements
+  entry:
+    min_timeframes_aligned: 3   # At least 3 timeframes must agree
+    vpes_threshold: 0.01        # VPES must exceed this
+    volume_confirmation: true
+    
+  # Add position requirements (stricter)
+  add:
+    require_new_high: true
+    vpes_increase_pct: 0.20     # VPES must increase 20%
+    min_timeframes_aligned: 4   # Need more confirmation
+    
+  # Exit triggers
+  exit:
+    break_swing_low: true
+    ema_break_bars: 3           # Bars below EMA before exit
+    vpes_divergence: true
+
+# -----------------------------------------------------------------------------
+# Risk Management
+# -----------------------------------------------------------------------------
+risk:
+  # Position limits
+  max_positions: 10
+  max_sector_exposure: 0.30     # 30% max in single sector
+  
+  # Loss limits
+  max_portfolio_drawdown: 0.15  # 15% portfolio drawdown -> reduce all
+  daily_loss_limit: 0.03        # 3% daily loss -> halt trading
+  single_trade_loss_limit: 0.02 # 2% max loss per trade
+  
+  # Profit taking
+  partial_profit_pct: 0.50      # Take 50% at first target
+  trailing_stop_pct: 0.08       # 8% trailing stop
+  
+  # Extreme market conditions
+  vix_threshold: 30             # High VIX -> reduce exposure
+  market_crash_threshold: 0.05  # 5% market drop -> emergency mode
+
+# -----------------------------------------------------------------------------
+# Backtesting
+# -----------------------------------------------------------------------------
+backtest:
+  initial_capital: 100000
+  commission: 0.001             # 0.1% commission
+  slippage: 0.001              # 0.1% slippage
+  
+  # Optimization
+  optimization:
+    method: "bayesian"          # grid, bayesian
+    n_trials: 100
+    
+  # Parameter ranges for optimization
+  param_ranges:
+    ema_fast: [10, 30]
+    ema_slow: [40, 80]
+    vpes_period: [10, 30]
+    pullback_threshold: [0.03, 0.10]
+
+# -----------------------------------------------------------------------------
+# Logging & Monitoring
+# -----------------------------------------------------------------------------
+logging:
+  level: "INFO"                 # DEBUG, INFO, WARNING, ERROR
+  file_rotation: "1 day"
+  retention: "30 days"
+  
+  # What to log
+  log_signals: true
+  log_trades: true
+  log_indicators: true
+  log_risk_events: true
+
+# -----------------------------------------------------------------------------
+# News Integration (Optional)
+# -----------------------------------------------------------------------------
+news:
+  enabled: false
+  api_key: ""                   # NewsAPI key
+  sentiment_weight: 0.2         # Weight in overall signal score
+  keywords:
+    positive: ["beat", "upgrade", "growth", "profit", "acquisition"]
+    negative: ["miss", "downgrade", "loss", "lawsuit", "investigation"]
+
+# -----------------------------------------------------------------------------
+# Notification Settings
+# -----------------------------------------------------------------------------
+notifications:
+  enabled: false
+  channels:
+    email:
+      enabled: false
+      smtp_server: ""
+      sender: ""
+      recipients: []
+    telegram:
+      enabled: false
+      bot_token: ""
+      chat_id: ""

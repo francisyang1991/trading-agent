@@ -1,0 +1,1046 @@
+# Stock Universe with Themed Categories
+# Expanded for comprehensive strategy testing
+# Last updated: 2026-01-11
+
+# Benchmark
+benchmark: SPY
+
+# ============================================================================
+# THEMES / SECTORS
+# ============================================================================
+themes:
+
+  # -------------------------------------------------------------------------
+  # MEGA CAP TECH
+  # -------------------------------------------------------------------------
+  mag7:
+    name: "Magnificent 7"
+    description: "The seven largest tech companies driving market returns"
+    symbols:
+      - AAPL   # Apple
+      - MSFT   # Microsoft
+      - GOOGL  # Alphabet
+      - AMZN   # Amazon
+      - NVDA   # NVIDIA
+      - META   # Meta Platforms
+      - TSLA   # Tesla
+
+  mega_cap:
+    name: "Mega Cap ($500B+)"
+    description: "Largest companies by market cap"
+    symbols:
+      - AAPL
+      - MSFT
+      - GOOGL
+      - AMZN
+      - NVDA
+      - META
+      - TSLA
+      - LLY    # Eli Lilly
+      - V      # Visa
+      - UNH    # UnitedHealth
+      - JPM    # JPMorgan
+      - XOM    # Exxon
+      - MA     # Mastercard
+      - JNJ    # Johnson & Johnson
+      - WMT    # Walmart
+      - PG     # Procter & Gamble
+      - AVGO   # Broadcom
+      - ORCL   # Oracle
+      - HD     # Home Depot
+
+  # -------------------------------------------------------------------------
+  # AI & SEMICONDUCTORS
+  # -------------------------------------------------------------------------
+  ai_chips:
+    name: "AI Chip Leaders"
+    description: "Companies leading AI chip development"
+    symbols:
+      - NVDA   # NVIDIA - AI GPU leader
+      - AMD    # AMD - AI/Gaming GPUs
+      - AVGO   # Broadcom - AI networking
+      - MRVL   # Marvell - AI infrastructure
+      - ARM    # ARM Holdings - AI chip architecture
+      - QCOM   # Qualcomm - AI mobile chips
+      - MU     # Micron - AI memory
+      - TSM    # TSMC - AI chip manufacturing
+      - ASML   # ASML - chip equipment
+      - AMAT   # Applied Materials
+      - LRCX   # Lam Research
+      - KLAC   # KLA Corp
+
+  ai_software:
+    name: "AI Software & Cloud"
+    description: "AI software, platforms, and cloud infrastructure"
+    symbols:
+      - MSFT   # Azure AI, Copilot
+      - GOOGL  # Gemini, Google Cloud
+      - AMZN   # AWS Bedrock
+      - META   # Llama, AI research
+      - CRM    # Salesforce Einstein
+      - PLTR   # Palantir AI platforms
+      - SNOW   # Snowflake AI
+      - DDOG   # Datadog AI ops
+      - NOW    # ServiceNow AI
+      - PANW   # Palo Alto AI security
+      - CRWD   # CrowdStrike AI security
+      - SPLK   # Splunk AI analytics
+      - AI     # C3.ai
+      - PATH   # UiPath AI automation
+      - BBAI   # BigBear.ai
+      - SOUN   # SoundHound AI
+
+  semiconductors:
+    name: "Semiconductors (Broad)"
+    description: "Full semiconductor ecosystem"
+    symbols:
+      - NVDA
+      - AMD
+      - INTC   # Intel
+      - AVGO
+      - QCOM
+      - TXN    # Texas Instruments
+      - MU
+      - MRVL
+      - ADI    # Analog Devices
+      - NXPI   # NXP Semiconductors
+      - "ON"   # ON Semiconductor
+      - SWKS   # Skyworks
+      - MCHP   # Microchip
+      - MPWR   # Monolithic Power
+      - ARM
+      - TSM
+      - ASML
+      - AMAT
+      - LRCX
+      - KLAC
+
+  # -------------------------------------------------------------------------
+  # CLOUD & SOFTWARE
+  # -------------------------------------------------------------------------
+  cloud_computing:
+    name: "Cloud Computing"
+    description: "Cloud infrastructure and platforms"
+    symbols:
+      - AMZN   # AWS
+      - MSFT   # Azure
+      - GOOGL  # Google Cloud
+      - CRM    # Salesforce
+      - ORCL   # Oracle Cloud
+      - IBM    # IBM Cloud
+      - NET    # Cloudflare
+      - DDOG   # Datadog
+      - SNOW   # Snowflake
+      - MDB    # MongoDB
+      - ESTC   # Elastic
+      - CFLT   # Confluent
+      - TWLO   # Twilio
+      - ZS     # Zscaler
+
+  saas_software:
+    name: "SaaS & Enterprise Software"
+    description: "Software-as-a-service companies"
+    symbols:
+      - CRM    # Salesforce
+      - NOW    # ServiceNow
+      - ADBE   # Adobe
+      - INTU   # Intuit
+      - WDAY   # Workday
+      - TEAM   # Atlassian
+      - ZM     # Zoom
+      - DOCU   # DocuSign
+      - OKTA   # Okta
+      - HUBS   # HubSpot
+      - VEEV   # Veeva
+      - BILL   # Bill.com
+      - PCTY   # Paylocity
+      - PAYC   # Paycom
+
+  cybersecurity:
+    name: "Cybersecurity"
+    description: "Security software and services"
+    symbols:
+      - CRWD   # CrowdStrike
+      - PANW   # Palo Alto Networks
+      - ZS     # Zscaler
+      - FTNT   # Fortinet
+      - S      # SentinelOne
+      - CYBR   # CyberArk
+      - OKTA   # Okta
+      - NET    # Cloudflare
+      - VRNS   # Varonis
+      - TENB   # Tenable
+      - RPD    # Rapid7
+
+  # -------------------------------------------------------------------------
+  # CONSUMER & E-COMMERCE
+  # -------------------------------------------------------------------------
+  ecommerce:
+    name: "E-commerce"
+    description: "Online retail and marketplaces"
+    symbols:
+      - AMZN   # Amazon
+      - SHOP   # Shopify
+      - MELI   # MercadoLibre
+      - SE     # Sea Limited
+      - BABA   # Alibaba
+      - JD     # JD.com
+      - PDD    # PDD Holdings
+      - EBAY   # eBay
+      - ETSY   # Etsy
+      - W      # Wayfair
+      - CHWY   # Chewy
+      - CPNG   # Coupang
+      - WISH   # ContextLogic
+
+  consumer_discretionary:
+    name: "Consumer Discretionary"
+    description: "Consumer goods and retail"
+    symbols:
+      - AMZN
+      - TSLA
+      - HD     # Home Depot
+      - MCD    # McDonald's
+      - NKE    # Nike
+      - SBUX   # Starbucks
+      - LOW    # Lowe's
+      - TJX    # TJ Maxx
+      - BKNG   # Booking
+      - MAR    # Marriott
+      - CMG    # Chipotle
+      - YUM    # Yum Brands
+      - DPZ    # Domino's
+      - ROST   # Ross Stores
+      - LULU   # Lululemon
+      - DECK   # Deckers
+      - ULTA   # Ulta Beauty
+
+  consumer_staples:
+    name: "Consumer Staples"
+    description: "Defensive consumer goods"
+    symbols:
+      - PG     # Procter & Gamble
+      - KO     # Coca-Cola
+      - PEP    # PepsiCo
+      - WMT    # Walmart
+      - COST   # Costco
+      - PM     # Philip Morris
+      - MO     # Altria
+      - MDLZ   # Mondelez
+      - CL     # Colgate
+      - KMB    # Kimberly-Clark
+      - GIS    # General Mills
+      - K      # Kellogg's
+      - HSY    # Hershey
+      - KHC    # Kraft Heinz
+      - TGT    # Target
+      - DG     # Dollar General
+      - DLTR   # Dollar Tree
+
+  # -------------------------------------------------------------------------
+  # FINTECH & FINANCIALS
+  # -------------------------------------------------------------------------
+  fintech:
+    name: "Fintech & Payments"
+    description: "Financial technology companies"
+    symbols:
+      - V      # Visa
+      - MA     # Mastercard
+      - PYPL   # PayPal
+      - COIN   # Coinbase
+      - AFRM   # Affirm
+      - SOFI   # SoFi
+      - HOOD   # Robinhood
+      - UPST   # Upstart
+      - NU     # Nu Holdings
+      - BILL   # Bill.com
+      - TOST   # Toast
+      - LPLA   # LPL Financial
+      - MKTX   # MarketAxess
+      - FIS    # Fidelity National
+      - FISV   # Fiserv
+      - GPN    # Global Payments
+
+  banks:
+    name: "Major Banks"
+    description: "Large financial institutions"
+    symbols:
+      - JPM    # JPMorgan Chase
+      - BAC    # Bank of America
+      - WFC    # Wells Fargo
+      - C      # Citigroup
+      - GS     # Goldman Sachs
+      - MS     # Morgan Stanley
+      - USB    # US Bancorp
+      - PNC    # PNC Financial
+      - TFC    # Truist
+      - SCHW   # Charles Schwab
+      - BLK    # BlackRock
+      - BX     # Blackstone
+      - KKR    # KKR
+
+  insurance:
+    name: "Insurance"
+    description: "Insurance companies"
+    symbols:
+      - UNH    # UnitedHealth
+      - PGR    # Progressive
+      - TRV    # Travelers
+      - CB     # Chubb
+      - AIG    # AIG
+      - MET    # MetLife
+      - ALL    # Allstate
+      - AFL    # Aflac
+
+  # -------------------------------------------------------------------------
+  # HEALTHCARE & BIOTECH
+  # -------------------------------------------------------------------------
+  healthcare:
+    name: "Healthcare Leaders"
+    description: "Major healthcare companies"
+    symbols:
+      - UNH    # UnitedHealth
+      - JNJ    # Johnson & Johnson
+      - LLY    # Eli Lilly
+      - PFE    # Pfizer
+      - ABBV   # AbbVie
+      - MRK    # Merck
+      - TMO    # Thermo Fisher
+      - ABT    # Abbott Labs
+      - DHR    # Danaher
+      - BMY    # Bristol-Myers
+      - AMGN   # Amgen
+      - GILD   # Gilead
+      - VRTX   # Vertex
+      - REGN   # Regeneron
+      - ZTS    # Zoetis
+
+  biotech:
+    name: "Biotech"
+    description: "Biotechnology companies"
+    symbols:
+      - MRNA   # Moderna
+      - BIIB   # Biogen
+      - VRTX   # Vertex
+      - REGN   # Regeneron
+      - ILMN   # Illumina
+      - SGEN   # Seagen
+      - ALNY   # Alnylam
+      - BMRN   # BioMarin
+      - EXAS   # Exact Sciences
+      - INCY   # Incyte
+      - NBIX   # Neurocrine
+
+  medical_devices:
+    name: "Medical Devices"
+    description: "Medical equipment and devices"
+    symbols:
+      - ISRG   # Intuitive Surgical
+      - SYK    # Stryker
+      - MDT    # Medtronic
+      - BSX    # Boston Scientific
+      - EW     # Edwards Lifesciences
+      - BDX    # Becton Dickinson
+      - ZBH    # Zimmer Biomet
+      - DXCM   # DexCom
+      - ALGN   # Align Technology
+      - PODD   # Insulet
+
+  # -------------------------------------------------------------------------
+  # ENERGY
+  # -------------------------------------------------------------------------
+  oil_gas:
+    name: "Oil & Gas"
+    description: "Traditional energy companies"
+    symbols:
+      - XOM    # Exxon Mobil
+      - CVX    # Chevron
+      - COP    # ConocoPhillips
+      - EOG    # EOG Resources
+      - SLB    # Schlumberger
+      - OXY    # Occidental
+      - MPC    # Marathon Petroleum
+      - VLO    # Valero
+      - PSX    # Phillips 66
+      - DVN    # Devon Energy
+      - HAL    # Halliburton
+      - BKR    # Baker Hughes
+
+  clean_energy:
+    name: "Clean Energy & Solar"
+    description: "Renewable energy companies"
+    symbols:
+      - ENPH   # Enphase Energy
+      - FSLR   # First Solar
+      - NEE    # NextEra Energy
+      - SEDG   # SolarEdge
+      - RUN    # Sunrun
+      - PLUG   # Plug Power
+      - BE     # Bloom Energy
+      - NOVA   # Sunnova
+      - DQ     # Daqo New Energy
+      - JKS    # JinkoSolar
+      - ARRY   # Array Technologies
+      - STEM   # Stem Inc
+
+  ev_auto:
+    name: "EV & Automotive"
+    description: "Electric vehicles and auto"
+    symbols:
+      - TSLA   # Tesla
+      - RIVN   # Rivian
+      - LCID   # Lucid
+      - NIO    # NIO
+      - XPEV   # XPeng
+      - LI     # Li Auto
+      - F      # Ford
+      - GM     # General Motors
+      - TM     # Toyota
+      - HMC    # Honda
+      - RACE   # Ferrari
+      - STLA   # Stellantis
+      - QS     # QuantumScape (batteries)
+      - CHPT   # ChargePoint
+
+  # -------------------------------------------------------------------------
+  # INDUSTRIALS & DEFENSE
+  # -------------------------------------------------------------------------
+  industrials:
+    name: "Industrials"
+    description: "Industrial and manufacturing"
+    symbols:
+      - CAT    # Caterpillar
+      - DE     # John Deere
+      - HON    # Honeywell
+      - UNP    # Union Pacific
+      - UPS    # UPS
+      - FDX    # FedEx
+      - RTX    # RTX (Raytheon)
+      - GE     # GE Aerospace
+      - MMM    # 3M
+      - EMR    # Emerson
+      - ITW    # Illinois Tool Works
+      - ETN    # Eaton
+      - PH     # Parker Hannifin
+      - ROK    # Rockwell
+      - CMI    # Cummins
+
+  aerospace_defense:
+    name: "Aerospace & Defense"
+    description: "Defense contractors and aerospace"
+    symbols:
+      - LMT    # Lockheed Martin
+      - RTX    # RTX (Raytheon)
+      - BA     # Boeing
+      - NOC    # Northrop Grumman
+      - GD     # General Dynamics
+      - LHX    # L3Harris
+      - TDG    # TransDigm
+      - HWM    # Howmet Aerospace
+      - AXON   # Axon Enterprise
+      - HII    # Huntington Ingalls
+      - LDOS   # Leidos
+
+  space:
+    name: "Space & Satellites"
+    description: "Space exploration and satellites"
+    symbols:
+      - RKLB   # Rocket Lab
+      - SPCE   # Virgin Galactic
+      - ASTS   # AST SpaceMobile
+      - GSAT   # Globalstar
+      - IRDM   # Iridium
+      - VSAT   # Viasat
+      - LUNR   # Intuitive Machines
+      - RDW    # Redwire
+
+  # -------------------------------------------------------------------------
+  # CRYPTO & BLOCKCHAIN
+  # -------------------------------------------------------------------------
+  crypto:
+    name: "Crypto & Blockchain"
+    description: "Cryptocurrency related stocks"
+    symbols:
+      - COIN   # Coinbase
+      - MSTR   # MicroStrategy (BTC treasury)
+      - MARA   # Marathon Digital
+      - RIOT   # Riot Platforms
+      - CLSK   # CleanSpark
+      - IREN   # Iris Energy
+      - HUT    # Hut 8 Mining
+      - BITF   # Bitfarms
+      - CIFR   # Cipher Mining
+      - BTBT   # Bit Digital
+      - BTDR   # Bitdeer
+      - SMLR   # Semler Scientific
+      - GBTC   # Grayscale Bitcoin Trust
+      - IBIT   # iShares Bitcoin Trust
+
+  # -------------------------------------------------------------------------
+  # COMMUNICATIONS & MEDIA
+  # -------------------------------------------------------------------------
+  telecom:
+    name: "Telecom"
+    description: "Telecommunications"
+    symbols:
+      - T      # AT&T
+      - VZ     # Verizon
+      - TMUS   # T-Mobile
+      - CMCSA  # Comcast
+      - CHTR   # Charter
+      - AMT    # American Tower
+      - CCI    # Crown Castle
+      - SBAC   # SBA Communications
+
+  streaming_media:
+    name: "Streaming & Media"
+    description: "Entertainment and streaming"
+    symbols:
+      - NFLX   # Netflix
+      - DIS    # Disney
+      - WBD    # Warner Bros Discovery
+      - PARA   # Paramount
+      - SPOT   # Spotify
+      - ROKU   # Roku
+      - RBLX   # Roblox
+      - TTWO   # Take-Two
+      - EA     # Electronic Arts
+      - ATVI   # Activision (now MSFT)
+      - MTCH   # Match Group
+      - PINS   # Pinterest
+      - SNAP   # Snap
+
+  social_media:
+    name: "Social Media"
+    description: "Social platforms and advertising"
+    symbols:
+      - META   # Meta (Facebook)
+      - GOOGL  # Google/YouTube
+      - SNAP   # Snapchat
+      - PINS   # Pinterest
+      - RDDT   # Reddit
+      - TTD    # The Trade Desk
+      - MGNI   # Magnite
+      - PUBM   # PubMatic
+      - DV     # DoubleVerify
+      - IAS    # Integral Ad Science
+
+  # -------------------------------------------------------------------------
+  # REAL ESTATE
+  # -------------------------------------------------------------------------
+  reits:
+    name: "REITs"
+    description: "Real Estate Investment Trusts"
+    symbols:
+      - PLD    # Prologis
+      - AMT    # American Tower
+      - EQIX   # Equinix
+      - SPG    # Simon Property
+      - O      # Realty Income
+      - DLR    # Digital Realty
+      - PSA    # Public Storage
+      - WELL   # Welltower
+      - AVB    # AvalonBay
+      - EQR    # Equity Residential
+      - VTR    # Ventas
+      - ARE    # Alexandria RE
+
+  # -------------------------------------------------------------------------
+  # HIGH VOLATILITY / MOMENTUM
+  # -------------------------------------------------------------------------
+  ultra_volatile:
+    name: "Ultra High Volatility"
+    description: "Stocks with extreme volatility (>70% annual) - use smart position sizing"
+    symbols:
+      - IREN   # Iris Energy
+      - RKLB   # Rocket Lab
+      - HOOD   # Robinhood
+      - MSTR   # MicroStrategy
+      - COIN   # Coinbase
+      - FLNC   # Fluence Energy
+      - RIOT   # Riot Platforms
+      - MARA   # Marathon Digital
+      - SMCI   # Super Micro Computer
+      - UPST   # Upstart
+      - AFRM   # Affirm
+      - LCID   # Lucid
+      - RIVN   # Rivian
+      - PLUG   # Plug Power
+      - ENVX   # Enovix
+      - QS     # QuantumScape
+      - IONQ   # IonQ (quantum)
+      - RGTI   # Rigetti (quantum)
+      - OKLO   # Oklo (nuclear)
+      - SMR    # NuScale (nuclear)
+
+  momentum_leaders:
+    name: "Momentum Leaders"
+    description: "Stocks with strong recent momentum"
+    symbols:
+      - NVDA
+      - PLTR
+      - CRWD
+      - TTD
+      - NET
+      - DDOG
+      - SNOW
+      - MELI
+      - AXON
+      - DECK
+      - APP    # AppLovin
+      - CELH   # Celsius
+      - DUOL   # Duolingo
+      - ONON   # On Holding
+      - HIMS   # Hims & Hers
+
+  meme_retail:
+    name: "Meme & Retail Favorites"
+    description: "Popular retail trading stocks"
+    symbols:
+      - GME    # GameStop
+      - AMC    # AMC Entertainment
+      - HOOD   # Robinhood
+      - SOFI   # SoFi
+      - PLTR   # Palantir
+      - RIVN   # Rivian
+      - LCID   # Lucid
+      - NIO    # NIO
+      - SPCE   # Virgin Galactic
+      - DKNG   # DraftKings
+      - PENN   # Penn Gaming
+
+  # -------------------------------------------------------------------------
+  # USER WATCHLISTS (from TradingView)
+  # -------------------------------------------------------------------------
+  wilson:
+    name: "Wilson Picks"
+    description: "High conviction growth stocks"
+    symbols:
+      - ALAB   # Astera Labs - AI connectivity
+      - APP    # AppLovin - Mobile gaming/ads
+      - CRS    # Carpenter Technology - Specialty metals
+      - GEV    # GE Vernova - Energy transition
+      - LEN    # Lennar - Homebuilder
+      - CELH   # Celsius - Energy drinks
+      - TMDX   # TransMedex - Organ transport
+      - AXON   # Axon Enterprise - Law enforcement tech
+      - RH     # RH (Restoration Hardware) - Luxury home
+
+  moonvest:
+    name: "Moonvest Speculative"
+    description: "High volatility momentum plays"
+    symbols:
+      - LAES   # SEALSQ - Semiconductors
+      - RXST   # RxSight - Vision tech
+      - IREN   # Iris Energy - Bitcoin mining
+      - PGY    # Pagaya - AI fintech
+      - CLSK   # CleanSpark - Bitcoin mining
+      - FLNC   # Fluence Energy - Energy storage
+      - HOOD   # Robinhood
+      - RCAT   # Red Cat Holdings - Drones
+      - DLO    # DLocal - LatAm payments
+      - WRD    # WeRide - Autonomous driving
+      - LUNR   # Intuitive Machines - Space
+      - SRPT   # Sarepta - Biotech
+      - KSS    # Kohl's - Retail
+      - CRTO   # Criteo - Ad tech
+      - NBIS   # Nebius - AI cloud
+      - ZETA   # Zeta Global - Marketing tech
+
+  saiyan:
+    name: "SAIYAN Capital"
+    description: "Emerging tech and AI plays"
+    symbols:
+      - RR     # Richtech Robotics - Service robots
+      - ADPT   # Adaptive Biotech - Immune medicine
+      - LPTH   # LightPath - Optics
+      - SMCI   # Super Micro - AI servers
+      - DPRO   # Draganfly - Drones
+      - NKLR   # Nukkleus - Crypto/fintech
+      - JOBY   # Joby Aviation - eVTOL
+      - SOUN   # SoundHound - Voice AI
+      - PL     # Planet Labs - Satellite imaging
+
+  # -------------------------------------------------------------------------
+  # VALUE & DIVIDEND
+  # -------------------------------------------------------------------------
+  dividend_aristocrats:
+    name: "Dividend Aristocrats"
+    description: "25+ years of dividend increases"
+    symbols:
+      - JNJ    # Johnson & Johnson
+      - PG     # Procter & Gamble
+      - KO     # Coca-Cola
+      - PEP    # PepsiCo
+      - MMM    # 3M
+      - ABT    # Abbott
+      - MCD    # McDonald's
+      - WMT    # Walmart
+      - TGT    # Target
+      - ADP    # ADP
+      - CL     # Colgate-Palmolive
+      - ITW    # Illinois Tool Works
+      - GPC    # Genuine Parts
+      - SWK    # Stanley Black Decker
+      - EMR    # Emerson
+
+  value_stocks:
+    name: "Value Stocks"
+    description: "Undervalued large caps"
+    symbols:
+      - JPM    # JPMorgan
+      - BAC    # Bank of America
+      - WFC    # Wells Fargo
+      - C      # Citigroup
+      - T      # AT&T
+      - VZ     # Verizon
+      - IBM    # IBM
+      - INTC   # Intel
+      - PFE    # Pfizer
+      - GILD   # Gilead
+      - BMY    # Bristol-Myers
+      - CVS    # CVS Health
+      - WBA    # Walgreens
+      - PARA   # Paramount
+
+  # -------------------------------------------------------------------------
+  # QUANTUM & EMERGING TECH
+  # -------------------------------------------------------------------------
+  quantum:
+    name: "Quantum Computing"
+    description: "Quantum computing companies"
+    symbols:
+      - IONQ   # IonQ
+      - RGTI   # Rigetti Computing
+      - QBTS   # D-Wave Quantum
+      - QUBT   # Quantum Computing Inc
+      - ARQQ   # Arqit Quantum
+
+  nuclear:
+    name: "Nuclear & SMR"
+    description: "Nuclear energy and small modular reactors"
+    symbols:
+      - SMR    # NuScale Power
+      - OKLO   # Oklo
+      - CCJ    # Cameco (uranium)
+      - UEC    # Uranium Energy
+      - DNN    # Denison Mines
+      - LEU    # Centrus Energy
+      - NNE    # Nano Nuclear Energy
+
+  robotics:
+    name: "Robotics & Automation"
+    description: "Robotics and industrial automation"
+    symbols:
+      - ISRG   # Intuitive Surgical
+      - ROK    # Rockwell
+      - FANUY  # Fanuc
+      - ABB    # ABB
+      - TER    # Teradyne
+      - IRBT   # iRobot
+      - PATH   # UiPath
+      - SMCI   # Super Micro
+
+# ============================================================================
+# QUICK TEST LISTS
+# ============================================================================
+
+# Top 10 for quick testing
+quick_test:
+  - NVDA
+  - MSFT
+  - GOOGL
+  - AMZN
+  - META
+  - AAPL
+  - TSLA
+  - AMD
+  - CRM
+  - PLTR
+
+# High conviction picks
+high_conviction:
+  - NVDA   # AI chip leader
+  - GOOGL  # AI + cloud + search
+  - MSFT   # AI + cloud + enterprise
+  - PLTR   # AI defense/enterprise
+  - CRWD   # Cybersecurity leader
+  - AXON   # Law enforcement tech
+  - LLY    # GLP-1 leader
+  - CAT    # Infrastructure
+  - GE     # Aerospace recovery
+  - MELI   # LatAm e-commerce
+
+# Volatile but trending (for swing trades)
+volatile_momentum:
+  - IREN
+  - RKLB
+  - FLNC
+  - MU
+  - MARA
+  - COIN
+  - SMCI
+  - IONQ
+
+# ============================================================================
+# ALL UNIQUE SYMBOLS (auto-generated)
+# ============================================================================
+all_symbols:
+  # Mega Cap
+  - AAPL
+  - MSFT
+  - GOOGL
+  - AMZN
+  - NVDA
+  - META
+  - TSLA
+  - LLY
+  - V
+  - UNH
+  - JPM
+  - XOM
+  - MA
+  - JNJ
+  - WMT
+  - PG
+  - AVGO
+  - ORCL
+  - HD
+  # AI & Semis
+  - AMD
+  - MRVL
+  - ARM
+  - QCOM
+  - MU
+  - TSM
+  - ASML
+  - AMAT
+  - LRCX
+  - KLAC
+  - INTC
+  - TXN
+  - ADI
+  - NXPI
+  - "ON"
+  - SWKS
+  - MCHP
+  - MPWR
+  # AI Software
+  - CRM
+  - PLTR
+  - SNOW
+  - DDOG
+  - NOW
+  - PANW
+  - CRWD
+  - AI
+  - PATH
+  - SOUN
+  # Cloud & SaaS
+  - IBM
+  - NET
+  - MDB
+  - ESTC
+  - CFLT
+  - TWLO
+  - ZS
+  - ADBE
+  - INTU
+  - WDAY
+  - TEAM
+  - ZM
+  - DOCU
+  - OKTA
+  - HUBS
+  - VEEV
+  - BILL
+  # Fintech
+  - PYPL
+  - COIN
+  - AFRM
+  - SOFI
+  - HOOD
+  - UPST
+  - NU
+  - TOST
+  - FIS
+  - FISV
+  - GPN
+  # Banks
+  - BAC
+  - WFC
+  - C
+  - GS
+  - MS
+  - USB
+  - PNC
+  - TFC
+  - SCHW
+  - BLK
+  - BX
+  - KKR
+  # Healthcare
+  - PFE
+  - ABBV
+  - MRK
+  - TMO
+  - ABT
+  - DHR
+  - BMY
+  - AMGN
+  - GILD
+  - VRTX
+  - REGN
+  - ZTS
+  - MRNA
+  - BIIB
+  - ILMN
+  - ISRG
+  - SYK
+  - MDT
+  - BSX
+  - EW
+  - DXCM
+  - ALGN
+  # Energy
+  - CVX
+  - COP
+  - EOG
+  - SLB
+  - OXY
+  - MPC
+  - VLO
+  - PSX
+  - DVN
+  - HAL
+  - BKR
+  - ENPH
+  - FSLR
+  - NEE
+  - SEDG
+  - RUN
+  - PLUG
+  - BE
+  # EV & Auto
+  - RIVN
+  - LCID
+  - NIO
+  - XPEV
+  - LI
+  - F
+  - GM
+  - TM
+  - QS
+  - CHPT
+  # Industrials
+  - CAT
+  - DE
+  - HON
+  - UNP
+  - UPS
+  - FDX
+  - RTX
+  - GE
+  - MMM
+  - EMR
+  - ITW
+  - ETN
+  - PH
+  - ROK
+  - CMI
+  # Defense & Space
+  - LMT
+  - BA
+  - NOC
+  - GD
+  - LHX
+  - TDG
+  - AXON
+  - RKLB
+  - SPCE
+  - ASTS
+  - IRDM
+  - LUNR
+  # Crypto
+  - MSTR
+  - MARA
+  - RIOT
+  - CLSK
+  - IREN
+  - HUT
+  - BITF
+  - CIFR
+  # Telecom & Media
+  - T
+  - VZ
+  - TMUS
+  - CMCSA
+  - CHTR
+  - AMT
+  - CCI
+  - NFLX
+  - DIS
+  - WBD
+  - SPOT
+  - ROKU
+  - RBLX
+  - TTWO
+  - EA
+  - SNAP
+  - PINS
+  - RDDT
+  - TTD
+  # Consumer
+  - KO
+  - PEP
+  - COST
+  - TGT
+  - DG
+  - DLTR
+  - MCD
+  - NKE
+  - SBUX
+  - LOW
+  - TJX
+  - BKNG
+  - MAR
+  - CMG
+  - YUM
+  - LULU
+  - DECK
+  - ULTA
+  # E-commerce
+  - SHOP
+  - MELI
+  - SE
+  - BABA
+  - JD
+  - PDD
+  - EBAY
+  - ETSY
+  - W
+  - CHWY
+  # REITs
+  - PLD
+  - EQIX
+  - SPG
+  - O
+  - DLR
+  - PSA
+  - WELL
+  # Volatile & Meme
+  - FLNC
+  - SMCI
+  - ENVX
+  - IONQ
+  - RGTI
+  - OKLO
+  - SMR
+  - GME
+  - AMC
+  - DKNG
+  - APP
+  - CELH
+  - DUOL
+  - ONON
+  - HIMS

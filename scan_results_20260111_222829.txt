@@ -1,0 +1,92 @@
+🚀 SAIYAN CAPITAL - UNIFIED STOCK SCANNER
+==================================================
+📅 Generated: 2026-01-11 22:28:32
+🎯 Scanned: 50 symbols | Found: 48 valid results
+
+
+==============================================================================================================
+Symbol        Price Regime          Vol   RSI       EV Action                 Entry
+--------------------------------------------------------------------------------------------------------------
+KLAC     $  1400.00 STRONG_UP       44%   70   +1.52% 🟡 BUY               BUY_NOW
+AMD      $   203.17 MODERATE_UP     60%   52   +1.53% 🟡 BUY            BELOW_ZONE
+MU       $   345.09 PARABOLIC       63%   81   +2.90% ⚪ WAIT         OVEREXTENDED
+LRCX     $   218.36 PARABOLIC       50%   84   +2.28% ⚪ WAIT         OVEREXTENDED
+MPWR     $   958.97 MODERATE_UP     59%   57   +1.23% 🟡 BUY               BUY_NOW
+TSLA     $   445.01 MODERATE_UP     63%   32   +0.49% 🟡 BUY               BUY_NOW
+PLTR     $   177.49 WEAK_UP         67%   42   +2.44% 🟡 BUY               BUY_NOW
+LLY      $  1063.56 MODERATE_UP     41%   52   +0.88% 🟡 BUY               BUY_NOW
+INTC     $    45.55 STRONG_UP       65%   82   +1.97% ⚪ WAIT         OVEREXTENDED
+JNJ      $   204.39 MODERATE_UP     19%   39   +0.81% 🟡 BUY               BUY_NOW
+PATH     $    16.32 MODERATE_UP     61%   53   +0.86% 🟡 BUY               BUY_NOW
+AVGO     $   344.97 MODERATE_UP     53%   63   +1.11% 🟡 BUY               BUY_NOW
+WMT      $   114.53 MODERATE_UP     25%   49   +0.52% 🟡 BUY               BUY_NOW
+JPM      $   329.19 WEAK_UP         25%   68   +0.70% ⚪ WAIT           ABOVE_ZONE
+NVDA     $   184.86 WEAK_UP         49%   67   +0.87% 🟡 BUY               BUY_NOW
+QCOM     $   177.78 WEAK_UP         38%   57   +0.39% 🟡 BUY               BUY_NOW
+GOOGL    $   328.57 STRONG_UP       32%   89   +1.15% ⚪ WAIT         OVEREXTENDED
+IBM      $   304.22 WEAK_UP         30%   54   +0.78% 🟡 BUY               BUY_NOW
+XOM      $   124.61 WEAK_UP         24%   67   +0.36% ⚪ WAIT           ABOVE_ZONE
+NET      $   182.78 SIDEWAYS        52%   37   +1.39% 🟡 BUY            BELOW_ZONE
+NXPI     $   241.15 WEAK_UP         47%   66   +0.47% ⚪ WAIT           ABOVE_ZONE
+MRVL     $    83.22 WEAK_UP         68%   47   -0.21% 🔴 AVOID              NEG_EV
+SNOW     $   219.09 WEAK_UP         50%   48   +0.86% 🟡 BUY            BELOW_ZONE
+UNH      $   343.98 WEAK_UP         48%   65   -0.54% 🔴 AVOID              NEG_EV
+SOUN     $    11.75 WEAK_UP         97%   61   +0.52% ⚪ WAIT           ABOVE_ZONE
+MA       $   575.54 WEAK_UP         23%   60   +0.30% 🟡 BUY               BUY_NOW
+CRWD     $   470.61 SIDEWAYS        46%   46   +0.75% ⚪ WAIT           ABOVE_ZONE
+V        $   349.77 WEAK_UP         23%   55   +0.32% 🟡 BUY               BUY_NOW
+PANW     $   189.02 SIDEWAYS        35%   54   +0.30% ⚪ WAIT           ABOVE_ZONE
+HD       $   374.64 WEAK_UP         24%   67   -0.13% 🔴 AVOID              NEG_EV
+MSFT     $   479.28 SIDEWAYS        24%   44   +0.33% ⚪ WAIT           ABOVE_ZONE
+CRM      $   259.94 WEAK_UP         32%   52   -0.30% 🔴 AVOID              NEG_EV
+ASML     $  1273.88 STRONG_UP       41%   84   +1.22% ⚪ WAIT         OVEREXTENDED
+ORCL     $   198.52 SIDEWAYS        62%   69   +0.78% ⚪ WAIT           ABOVE_ZONE
+META     $   653.06 SIDEWAYS        38%   43   +0.28% ⚪ WAIT           ABOVE_ZONE
+DDOG     $   125.49 SIDEWAYS        50%   32   +0.15% 🟡 BUY            BELOW_ZONE
+PG       $   141.87 SIDEWAYS        19%   38   -0.18% 🔴 AVOID              NEG_EV
+AMAT     $   301.18 STRONG_UP       46%   77   +1.23% 🟡 BUY               BUY_NOW
+TXN      $   190.31 SIDEWAYS        41%   68   +0.16% ⚪ WAIT           ABOVE_ZONE
+TSM      $   323.63 MODERATE_UP     41%   80   +1.06% ⚪ WAIT         OVEREXTENDED
+SWKS     $    60.17 SIDEWAYS        51%   35   -0.46% 🔴 AVOID              NEG_EV
+ARM      $   111.79 DOWNTREND       61%   45   -0.10% 🔴 AVOID            NO_ENTRY
+NOW      $   141.80 DOWNTREND       41%   30   -0.55% 🔴 AVOID            NO_ENTRY
+ADI      $   300.93 MODERATE_UP     39%   83   +0.82% ⚪ WAIT         OVEREXTENDED
+AAPL     $   259.37 MODERATE_UP     32%   22   +0.35% 🟡 BUY            BELOW_ZONE
+AI       $    14.02 DOWNTREND       64%   54   -1.30% 🔴 AVOID            NO_ENTRY
+MCHP     $    75.22 WEAK_UP         60%   79   +0.94% ⚪ WAIT           ABOVE_ZONE
+AMZN     $   247.38 WEAK_UP         35%   81   +0.29% ⚪ WAIT         OVEREXTENDED
+
+==========================================================================================
+📋 SUMMARY: 20 BUY | 19 WAIT | 9 AVOID
+==========================================================================================
+
+🟢 ACTIONABLE (20):
+Symbol        Price               Buy Zone       Stop       EV   Size
+----------------------------------------------------------------------
+KLAC     $  1400.00 $1335.71-$1400.00 $  1292.86   +1.52%  12.0%
+AMD      $   203.17 $209.40-$217.95 $   204.08   +1.53%   8.0%
+MPWR     $   958.97 $929.60-$967.55 $   896.04   +1.23%   8.0%
+TSLA     $   445.01 $442.33-$460.38 $   421.56   +0.49%   7.2%
+PLTR     $   177.49 $176.98-$184.21 $   170.56   +2.44%   8.0%
+LLY      $  1063.56 $1040.32-$1082.78 $   960.74   +0.88%  12.0%
+JNJ      $   204.39 $201.76-$210.00 $   191.22   +0.81%  15.0%
+PATH     $    16.32 $16.22-$16.88 $    15.08   +0.86%   8.0%
+AVGO     $   344.97 $342.88-$356.87 $   335.13   +1.11%   8.0%
+WMT      $   114.53 $110.42-$114.92 $   104.64   +0.52%  15.0%
+
+⚪ WAIT (19):
+   MU     - Overextended (RSI 81, +17.9% from EMA21).
+   LRCX   - Overextended (RSI 84, +19.4% from EMA21).
+   INTC   - Overextended (RSI 82, +16.0% from EMA21).
+   JPM    - Above buy zone. Wait for pullback to $328.91.
+   GOOGL  - Overextended (RSI 89, +4.5% from EMA21).
+
+🔴 AVOID (9):
+   MRVL   - Negative EV (-0.21%). Risk/reward unfavorable.
+   UNH    - Negative EV (-0.54%). Risk/reward unfavorable.
+   HD     - Negative EV (-0.13%). Risk/reward unfavorable.
+   CRM    - Negative EV (-0.30%). Risk/reward unfavorable.
+   PG     - Negative EV (-0.18%). Risk/reward unfavorable.
+
+==================================================
+📁 Output saved to: scan_results_20260111_222829.txt

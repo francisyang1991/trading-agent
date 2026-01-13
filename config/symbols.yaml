@@ -1,0 +1,137 @@
+# =============================================================================
+# Symbol Configuration & Watchlist
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Active Watchlist
+# -----------------------------------------------------------------------------
+watchlist:
+  # Technology
+  - symbol: AAPL
+    sector: Technology
+    market_cap: large
+    notes: "High liquidity, good for trend following"
+    
+  - symbol: MSFT
+    sector: Technology
+    market_cap: large
+    notes: "Stable trend, low volatility"
+    
+  - symbol: GOOGL
+    sector: Technology
+    market_cap: large
+    notes: ""
+    
+  - symbol: NVDA
+    sector: Technology
+    market_cap: large
+    notes: "High volatility, strong trends"
+    
+  - symbol: AMD
+    sector: Technology
+    market_cap: large
+    notes: "Volatile, good for momentum"
+    
+  - symbol: META
+    sector: Technology
+    market_cap: large
+    notes: ""
+
+  # Finance
+  - symbol: JPM
+    sector: Finance
+    market_cap: large
+    notes: "Sector leader"
+    
+  - symbol: BAC
+    sector: Finance
+    market_cap: large
+    notes: ""
+
+  # Healthcare
+  - symbol: JNJ
+    sector: Healthcare
+    market_cap: large
+    notes: "Defensive, low volatility"
+    
+  - symbol: UNH
+    sector: Healthcare
+    market_cap: large
+    notes: ""
+
+  # Consumer
+  - symbol: AMZN
+    sector: Consumer
+    market_cap: large
+    notes: ""
+    
+  - symbol: TSLA
+    sector: Consumer
+    market_cap: large
+    notes: "High volatility, strong momentum"
+
+  # Energy
+  - symbol: XOM
+    sector: Energy
+    market_cap: large
+    notes: ""
+
+  # ETFs for market context
+  - symbol: SPY
+    sector: ETF
+    market_cap: etf
+    notes: "S&P 500 - market benchmark"
+    
+  - symbol: QQQ
+    sector: ETF
+    market_cap: etf
+    notes: "Nasdaq 100 - tech benchmark"
+
+# -----------------------------------------------------------------------------
+# Sector Definitions
+# -----------------------------------------------------------------------------
+sectors:
+  Technology:
+    max_exposure: 0.40
+    correlation_group: 1
+    
+  Finance:
+    max_exposure: 0.25
+    correlation_group: 2
+    
+  Healthcare:
+    max_exposure: 0.25
+    correlation_group: 3
+    
+  Consumer:
+    max_exposure: 0.30
+    correlation_group: 4
+    
+  Energy:
+    max_exposure: 0.20
+    correlation_group: 5
+    
+  ETF:
+    max_exposure: 0.20
+    correlation_group: 0
+
+# -----------------------------------------------------------------------------
+# Symbol-Specific Overrides
+# -----------------------------------------------------------------------------
+overrides:
+  TSLA:
+    max_position_pct: 0.15      # Lower max due to volatility
+    min_vpes_threshold: 0.01    # Higher threshold
+    
+  NVDA:
+    max_position_pct: 0.15
+    min_vpes_threshold: 0.008
+
+# -----------------------------------------------------------------------------
+# Excluded Symbols (Do Not Trade)
+# -----------------------------------------------------------------------------
+excluded:
+  - symbol: GME
+    reason: "Too volatile, meme stock"
+  - symbol: AMC
+    reason: "Too volatile, meme stock"
