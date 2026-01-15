@@ -1,0 +1,40 @@
+{
+  "date": "2026-01-14",
+  "timestamp": "2026-01-14T18:25:36.668882",
+  "scanner_version": "v1.0.0",
+  "portfolio": {
+    "position_count": 3,
+    "total_value": 9074.00016784668,
+    "total_pnl": 134.00016784667974,
+    "total_pnl_pct": 1.4988833092469678,
+    "positions": [
+      {
+        "symbol": "AMD",
+        "pnl_pct": 1.176473350007079,
+        "value": 4472.0001220703125
+      },
+      {
+        "symbol": "IONQ",
+        "pnl_pct": 5.12396914899842,
+        "value": 2544.0000534057617
+      },
+      {
+        "symbol": "XPEV",
+        "pnl_pct": -2.0000003633044994,
+        "value": 2057.9999923706055
+      }
+    ]
+  },
+  "signals_updated": 0,
+  "performance_30d": {
+    "message": "No resolved signals in period"
+  },
+  "performance_90d": {
+    "message": "No resolved signals in period"
+  },
+  "insights": [
+    "CRITICAL: Win rate below 45% - review signal criteria urgently",
+    "Low EV (<0.5%) - barely profitable after commissions"
+  ],
+  "pending_signals": 0
+}
