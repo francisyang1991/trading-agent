@@ -56,6 +56,24 @@ from enum import Enum
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import DataManager for cached data
+try:
+    from src.data_manager import DataManager
+    DATA_MANAGER = DataManager()
+    USE_CACHE = True
+except ImportError:
+    DATA_MANAGER = None
+    USE_CACHE = False
+
+
+def get_stock_data(symbol: str, period: str = "2y") -> Optional[pd.DataFrame]:
+    """Get stock data using cache if available."""
+    if USE_CACHE and DATA_MANAGER:
+        return DATA_MANAGER.get_daily_data(symbol, period)
+    else:
+        ticker = yf.Ticker(symbol)
+        return ticker.history(period=period)
+
 try:
     from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
     from sklearn.linear_model import LogisticRegression
@@ -912,11 +930,10 @@ def run_full_analysis(symbol: str) -> Dict:
     print(f"  FULL ML ANALYSIS: {symbol}")
     print(f"{'='*70}")
     
-    # Download data
-    ticker = yf.Ticker(symbol)
-    data = ticker.history(period="3y")
+    # Download data (uses cache if available)
+    data = get_stock_data(symbol, period="3y")
     
-    if data.empty or len(data) < 300:
+    if data is None or data.empty or len(data) < 300:
         print(f"❌ Insufficient data for {symbol}")
         return {}
     
@@ -1007,17 +1024,21 @@ def analyze_stock_ml(symbol: str) -> Optional[MLSignal]:
     print("-" * 50)
     
     try:
-        # Download data
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period="2y")
+        # Download data (uses cache if available)
+        data = get_stock_data(symbol, period="2y")
         
-        if data.empty or len(data) < 200:
+        if data is None or data.empty or len(data) < 200:
             print(f"❌ Insufficient data for {symbol}")
             return None
         
         # Get stock info
-        info = ticker.info
-        stock_name = info.get('shortName', symbol)
+        if USE_CACHE and DATA_MANAGER:
+            info = DATA_MANAGER.get_fundamentals(symbol)
+            stock_name = info.get('name', symbol)
+        else:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            stock_name = info.get('shortName', symbol)
         current_price = data['Close'].iloc[-1]
         
         print(f"📈 {stock_name} @ ${current_price:.2f}")
@@ -1145,10 +1166,9 @@ def main():
         
         # Use first symbol for tuning
         symbol = symbols[0]
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period="3y")
+        data = get_stock_data(symbol, period="3y")
         
-        if len(data) >= 300:
+        if data is not None and len(data) >= 300:
             tuner = HyperparameterTuner()
             results = tuner.tune_all(data)
             
@@ -1170,10 +1190,9 @@ def main():
         backtest_results = {}
         for symbol in symbols:
             print(f"\n   Testing {symbol}...")
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(period="3y")
+            data = get_stock_data(symbol, period="3y")
             
-            if len(data) >= 300:
+            if data is not None and len(data) >= 300:
                 backtester = MLBacktester(forward_days=5, return_threshold=2.0)
                 result = backtester.walk_forward_backtest(data)
                 backtest_results[symbol] = result
@@ -1191,10 +1210,9 @@ def main():
         
         for symbol in symbols:
             print(f"\n📊 {symbol}:")
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(period="2y")
+            data = get_stock_data(symbol, period="2y")
             
-            if len(data) >= 200:
+            if data is not None and len(data) >= 200:
                 analyzer = FeatureAnalyzer()
                 importance = analyzer.analyze_importance(data)
                 

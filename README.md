@@ -142,6 +142,24 @@ python main.py --mode paper
 
 ---
 
+## 📨 Daily Scanner Email Report
+
+The scanner already writes a text report to `results/scan_YYYYMMDD_HHMMSS.txt`. You can run it daily and email yourself the report:
+
+```bash
+# Run once (cron-friendly)
+python tools/daily_scanner_email.py --once --high-conviction
+
+# Or run as a long-running process (runs every day at 07:00 local time)
+python tools/daily_scanner_email.py --daily --time 07:00 --high-conviction
+```
+
+Configure SMTP via environment variables (see `env.example` for a template):
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_USE_TLS`
+- `EMAIL_SENDER`, `EMAIL_RECIPIENTS`, `EMAIL_SUBJECT_PREFIX`
+
+---
+
 ## 📊 Core Strategy Logic
 
 ### Stock Classification

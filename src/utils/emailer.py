@@ -15,6 +15,11 @@ import smtplib
 import ssl
 from typing import Iterable, List, Optional, Sequence, Tuple
 
+try:
+    import yaml  # type: ignore
+except Exception:  # pragma: no cover
+    yaml = None
+
 
 def _split_recipients(value: str) -> List[str]:
     # Supports comma/space-separated lists.
@@ -84,6 +89,57 @@ def load_email_config_from_env(prefix: str = "") -> Tuple[Optional[SmtpConfig], 
         recipients=recipients,
         subject_prefix=subject_prefix,
     )
+    return smtp, email
+
+
+def load_email_config_from_settings_yaml(settings_path: str) -> Tuple[Optional[SmtpConfig], Optional[EmailConfig]]:
+    """
+    Load email configuration from config/settings.yaml (notifications section).
+
+    Expected structure (already present in config/settings.yaml):
+      notifications:
+        enabled: true/false
+        channels:
+          email:
+            enabled: true/false
+            smtp_server: "smtp.example.com"
+            smtp_port: 587            # optional
+            smtp_username: ""         # optional
+            sender: "me@example.com"
+            recipients: ["me@example.com"]
+
+    Note: smtp_password is intentionally expected via environment variables.
+    """
+    if yaml is None:
+        return None, None
+
+    path = Path(settings_path)
+    if not path.exists():
+        return None, None
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    notif = raw.get("notifications", {}) or {}
+    channels = notif.get("channels", {}) or {}
+    email_raw = channels.get("email", {}) or {}
+
+    host = (email_raw.get("smtp_server") or "").strip()
+    if not host:
+        return None, None
+
+    port = int(email_raw.get("smtp_port") or 587)
+    username = (email_raw.get("smtp_username") or "").strip()
+    sender = (email_raw.get("sender") or "").strip() or username
+
+    recipients_val = email_raw.get("recipients") or []
+    if isinstance(recipients_val, str):
+        recipients = _split_recipients(recipients_val)
+    elif isinstance(recipients_val, list):
+        recipients = [str(x).strip() for x in recipients_val if str(x).strip()]
+    else:
+        recipients = []
+
+    smtp = SmtpConfig(host=host, port=port, username=username, password=os.getenv("SMTP_PASSWORD", ""), use_tls=True)
+    email = EmailConfig(sender=sender, recipients=recipients, subject_prefix=str(email_raw.get("subject_prefix") or ""))
     return smtp, email
 
 

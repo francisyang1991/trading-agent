@@ -51,6 +51,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import DataManager for cached data
+try:
+    from src.data_manager import DataManager
+    DATA_MANAGER = DataManager()
+    USE_CACHE = True
+except ImportError:
+    DATA_MANAGER = None
+    USE_CACHE = False
+
 
 # ============================================================================
 # ENUMS
@@ -245,10 +254,14 @@ def load_universe() -> Dict:
 def scan_stock(symbol: str) -> Optional[StockScan]:
     """Comprehensive stock scan - combines all analysis."""
     try:
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period="1y")
+        # Use cached data if available (much faster)
+        if USE_CACHE and DATA_MANAGER:
+            data = DATA_MANAGER.get_daily_data(symbol, period="1y")
+        else:
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(period="1y")
         
-        if data.empty or len(data) < 100:
+        if data is None or data.empty or len(data) < 100:
             return None
         
         close = data['Close']
@@ -439,9 +452,13 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
         return None
 
 
-def scan_symbols(symbols: List[str]) -> List[StockScan]:
+def scan_symbols(symbols: List[str], use_preload: bool = True) -> List[StockScan]:
     """Scan multiple symbols in parallel."""
     results = []
+    
+    # Preload data for all symbols (bulk cache fill)
+    if USE_CACHE and DATA_MANAGER and use_preload and len(symbols) > 5:
+        DATA_MANAGER.preload_symbols(symbols, period="1y")
     
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(scan_stock, s): s for s in symbols}
@@ -568,11 +585,16 @@ def format_summary(writer: OutputWriter, results: List[StockScan]):
         writer.write("")
         writer.write(f"  ACTIONABLE OPPORTUNITIES ({len(buys)})")
         writer.write("-" * 90)
-        writer.write(f"  {'Symbol':<8} {'Price':>10} {'Buy Zone':>22} {'Stop':>10} {'EV':>8} {'Size':>6}")
-        writer.write("-" * 90)
         for r in buys:
-            writer.write(f"  {r.symbol:<8} ${r.price:>9.2f} ${r.buy_zone_low:.2f}-${r.buy_zone_high:.2f} "
-                        f"${r.stop_loss:>9.2f} {r.expected_value:>+7.2f}% {r.position_size_pct:>5.1f}%")
+            entry = (r.buy_zone_low + r.buy_zone_high) / 2
+            writer.write(
+                f"  {r.symbol:<6} Price ${r.price:>7.2f} | Entry ${r.buy_zone_low:.2f}-${r.buy_zone_high:.2f} "
+                f"(mid ${entry:.2f})"
+            )
+            writer.write(
+                f"        Stop ${r.stop_loss:.2f} | T1 ${r.target_1:.2f} | T2 ${r.target_2:.2f} | "
+                f"EV {r.expected_value:+.2f}% | R:R 1:{r.risk_reward:.1f} | Size {r.position_size_pct:.1f}%"
+            )
     
     if waits:
         writer.write("")
@@ -612,6 +634,53 @@ def format_top_picks(writer: OutputWriter, results: List[StockScan]):
         writer.write("  BUY (Good Setups)")
         for r in regular_buys[:5]:
             writer.write(f"  -> {r.symbol:<6} @ ${r.price:.2f} | EV: {r.expected_value:+.2f}% | R:R 1:{r.risk_reward:.1f}")
+
+
+def build_symbol_theme_map(universe: Dict) -> Dict[str, str]:
+    """Build a symbol -> theme name map using first match."""
+    symbol_theme = {}
+    for theme_key, theme in universe.get("themes", {}).items():
+        theme_name = theme.get("name", theme_key)
+        for symbol in theme.get("symbols", []):
+            if symbol not in symbol_theme:
+                symbol_theme[symbol] = theme_name
+    return symbol_theme
+
+
+def format_wait_watchlist(
+    writer: OutputWriter,
+    results: List[StockScan],
+    symbol_theme_map: Dict[str, str],
+    max_items: int = 10,
+):
+    """Show top WAIT names, one per theme, ranked by score."""
+    waits = [r for r in results if "WAIT" in r.action]
+    if not waits:
+        return
+
+    theme_best: Dict[str, StockScan] = {}
+    for r in waits:
+        theme = symbol_theme_map.get(r.symbol, "Other")
+        if theme not in theme_best or r.score > theme_best[theme].score:
+            theme_best[theme] = r
+
+    ranked = sorted(theme_best.items(), key=lambda item: item[1].score, reverse=True)
+    if max_items > 0:
+        ranked = ranked[:max_items]
+
+    writer.write("")
+    writer.write("=" * 110)
+    writer.write(f"  WAIT WATCHLIST (Top {len(ranked)} | 1 per theme)")
+    writer.write("=" * 110)
+
+    for theme, r in ranked:
+        entry = (r.buy_zone_low + r.buy_zone_high) / 2
+        writer.write(f"  {theme}")
+        writer.write(
+            f"    {r.symbol:<6} @ ${r.price:.2f} | Entry ${r.buy_zone_low:.2f}-${r.buy_zone_high:.2f} "
+            f"(mid ${entry:.2f}) | RSI {r.rsi:.0f} | dEMA21 {r.dist_ema21:+.1f}%"
+        )
+        writer.write(f"    Reason: {r.reasoning}")
 
 
 def format_regime_breakdown(writer: OutputWriter, results: List[StockScan]):
@@ -742,6 +811,8 @@ def run_scan(
     
     # Create output writer
     writer = OutputWriter(output_file, to_console)
+    universe = load_universe()
+    symbol_theme_map = build_symbol_theme_map(universe)
     
     # Write header
     title = "STOCK SCANNER REPORT"
@@ -758,8 +829,9 @@ def run_scan(
         format_quick_scan(writer, results)
     else:
         # Full report
-        format_quick_scan(writer, results)
         format_top_picks(writer, results)
+        format_wait_watchlist(writer, results, symbol_theme_map, max_items=10)
+        format_quick_scan(writer, results)
         format_summary(writer, results)
         format_regime_breakdown(writer, results)
     
