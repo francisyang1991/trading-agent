@@ -1,0 +1,29 @@
+metadata:
+  generated_at: "2026-01-21"
+  description: "Small test universe for quick backtesting"
+themes:
+  test:
+    name: "Test Universe"
+    description: "Small test universe for quick backtesting"
+    symbols:
+      - AAPL
+      - MSFT
+      - NVDA
+      - TSLA
+      - GOOGL
+      - AMZN
+      - META
+      - NFLX
+      - AMD
+      - INTC
+all_symbols:
+  - AAPL
+  - MSFT
+  - NVDA
+  - TSLA
+  - GOOGL
+  - AMZN
+  - META
+  - NFLX
+  - AMD
+  - INTC

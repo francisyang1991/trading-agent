@@ -1,66 +1,26 @@
 #!/usr/bin/env python3
 """
-Stock Data Cache Manager
-========================
-Local caching system for stock data with incremental updates.
+DEPRECATED: use SQLite cache via `src/data_manager.py`
+=====================================================
 
-Features:
-- Saves downloaded data to local CSV/Parquet files
-- Checks if data exists before downloading
-- Only downloads new data (incremental updates)
-- Merges new data with existing cached data
+This project now standardizes on `src/data_manager.py` (SQLite + WAL) for all caching:
+- scanner
+- backtests
+- historical scans
 
-Usage:
-    from tools.data_cache import StockDataCache
-    
-    cache = StockDataCache()
-    data = cache.get_data("AAPL")  # Auto-loads from cache or downloads
-    cache.update_all()  # Update all cached symbols
+This legacy CSV/parquet cache duplicating logic is intentionally removed to avoid “new wheels”.
+
+Use instead:
+
+```bash
+python3 -m src.data_manager --stats
+python3 -m src.data_manager --preload AAPL MSFT NVDA
+```
 """
 
-import os
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-import yfinance as yf
-import pandas as pd
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Optional, List, Dict
-import json
-from loguru import logger
-
-
-class StockDataCache:
-    """
-    Local cache manager for stock data.
-    Supports incremental updates to minimize API calls and improve performance.
-    """
-    
-    def __init__(
-        self,
-        cache_dir: str = "data/cache",
-        format: str = "csv",  # 'csv' or 'parquet' (parquet requires pyarrow)
-        default_period: str = "2y"  # Default download period for new stocks
-    ):
-        """
-        Initialize the cache manager.
-        
-        Args:
-            cache_dir: Directory to store cached data
-            format: File format ('csv' or 'parquet')
-            default_period: Default period to download for new stocks
-        """
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.format = format
-        self.default_period = default_period
-        
-        # Metadata file tracks last update times
-        self.metadata_file = self.cache_dir / "metadata.json"
-        self.metadata = self._load_metadata()
-        
-        logger.info(f"StockDataCache initialized at {self.cache_dir}")
+raise SystemExit(
+    "tools/data_cache.py is deprecated. Use SQLite cache via `python3 -m src.data_manager` instead."
+)
     
     def _load_metadata(self) -> Dict:
         """Load cache metadata."""

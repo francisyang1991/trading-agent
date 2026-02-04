@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
-DATA MANAGER WITH LOCAL SQL CACHING
-====================================
-Provides a caching layer for stock data to avoid repeated API calls.
+CACHED DATA MANAGER (CANONICAL FOR SCANNING & BACKTESTING)
+==========================================================
 
-Features:
-1. SQLite database for local storage
+This is the CANONICAL data manager for scanning and backtesting.
+Use this for all daily OHLCV data access. It provides:
+
+1. SQLite database for local storage (data/stock_cache.db)
 2. Automatic data freshness checking
 3. Incremental updates (only fetch missing days)
 4. Fundamental data caching (refreshed weekly)
 5. Thread-safe operations
 
-Tables:
-- stock_daily: OHLCV data (Date, Open, High, Low, Close, Volume)
-- stock_fundamentals: Sector, Industry, MarketCap, Beta, etc.
-- data_metadata: Last update timestamps
+For IBKR multi-timeframe live data, use IBKRDataManager from src/data/.
 
 Usage:
-    from src.data_manager import DataManager
+    # Recommended: Use the factory function
+    from src.data import get_data_manager
+    dm = get_data_manager("cached")
     
+    # Or import directly
+    from src.data_manager import DataManager
     dm = DataManager()
     
     # Get daily data (uses cache, fetches only if needed)
@@ -32,6 +34,11 @@ Usage:
     
     # Bulk preload (for scanner)
     dm.preload_symbols(["NVDA", "AMD", "GOOGL"])
+
+Tables:
+- stock_daily: OHLCV data (Date, Open, High, Low, Close, Volume)
+- stock_fundamentals: Sector, Industry, MarketCap, Beta, etc.
+- data_metadata: Last update timestamps
 """
 
 import sqlite3
@@ -196,31 +203,100 @@ class DataManager:
                 return cached_data.copy()
         
         # Check if we need to refresh from API
-        needs_refresh = force_refresh or self._needs_daily_refresh(symbol)
+        # NOTE: freshness alone is not enough — we also need sufficient historical coverage
+        # for the requested `period` (e.g., cached 1y shouldn't satisfy a 2y request).
+        needs_refresh = (
+            force_refresh
+            or self._needs_daily_refresh(symbol)
+            or self._needs_daily_coverage(symbol, period)
+        )
         
         if needs_refresh:
             # Fetch from API
-            data = self._fetch_daily_from_api(symbol, period)
-            if data is not None and not data.empty:
-                # Save to database
-                self._save_daily_to_db(symbol, data)
-                # Update in-memory cache
-                self._cache[cache_key] = (data.copy(), datetime.now())
-                return data
+            api_data = self._fetch_daily_from_api(symbol, period)
+            if api_data is not None and not api_data.empty:
+                # Save to database (expects Date column)
+                self._save_daily_to_db(symbol, api_data)
+                out = self._standardize_daily_output(api_data)
+                # Update in-memory cache (store standardized)
+                self._cache[cache_key] = (out.copy(), datetime.now())
+                return out
         
         # Load from database
         data = self._load_daily_from_db(symbol, period)
         if data is not None and not data.empty:
-            self._cache[cache_key] = (data.copy(), datetime.now())
-            return data
+            out = self._standardize_daily_output(data)
+            self._cache[cache_key] = (out.copy(), datetime.now())
+            return out
         
         # Fallback: fetch from API
-        data = self._fetch_daily_from_api(symbol, period)
-        if data is not None and not data.empty:
-            self._save_daily_to_db(symbol, data)
-            self._cache[cache_key] = (data.copy(), datetime.now())
-        
-        return data
+        api_data = self._fetch_daily_from_api(symbol, period)
+        if api_data is not None and not api_data.empty:
+            self._save_daily_to_db(symbol, api_data)
+            out = self._standardize_daily_output(api_data)
+            self._cache[cache_key] = (out.copy(), datetime.now())
+            return out
+
+        return None
+
+    def _standardize_daily_output(self, data: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        """
+        Standardize daily OHLCV data format returned to callers.
+
+        Guarantees:
+        - DatetimeIndex named 'Date'
+        - Columns: Open, High, Low, Close, Volume
+
+        Internally we may fetch API data in a 'Date' column format for DB writes; callers
+        should always receive an indexed DataFrame for consistent downstream logic.
+        """
+        if data is None or getattr(data, "empty", True):
+            return data
+
+        # If API-style with a Date column
+        if "Date" in data.columns:
+            out = data.copy()
+            out["Date"] = pd.to_datetime(out["Date"])
+            out = out.set_index("Date")
+            # Ensure the column order exists
+            cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in out.columns]
+            return out[cols].copy()
+
+        # If DB-style already indexed
+        if isinstance(data.index, pd.DatetimeIndex):
+            return data.copy()
+
+        return data.copy()
+
+    def _period_to_days(self, period: str) -> int:
+        """Map period string to approximate day count."""
+        days_map = {'1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '2y': 730, '5y': 1825}
+        return days_map.get(period, 365)
+
+    def _needs_daily_coverage(self, symbol: str, period: str) -> bool:
+        """
+        Return True if the DB does not have enough historical coverage for `period`.
+        This is different from staleness: data can be fresh but incomplete for longer periods.
+        """
+        try:
+            days = self._period_to_days(period)
+            desired_start_date = (datetime.now() - timedelta(days=days)).date()
+
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT MIN(date) FROM stock_daily WHERE symbol = ?", (symbol,))
+            row = cursor.fetchone()
+            conn.close()
+
+            if row is None or row[0] is None:
+                return True
+
+            # SQLite returns date as 'YYYY-MM-DD' string
+            min_date = datetime.fromisoformat(row[0]).date() if isinstance(row[0], str) else row[0]
+            return min_date > desired_start_date
+        except Exception:
+            # Fail safe: if we can't confirm coverage, fetch
+            return True
     
     def _needs_daily_refresh(self, symbol: str) -> bool:
         """Check if daily data needs refresh."""
@@ -504,10 +580,10 @@ class DataManager:
         results = {}
         symbols_to_fetch = []
         
-        # Check which symbols need refresh
+        # Check which symbols need refresh / coverage
         for symbol in symbols:
             symbol = symbol.upper()
-            if self._needs_daily_refresh(symbol):
+            if self._needs_daily_refresh(symbol) or self._needs_daily_coverage(symbol, period):
                 symbols_to_fetch.append(symbol)
             else:
                 # Load from cache/db

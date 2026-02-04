@@ -5,6 +5,51 @@ Each change is data-driven based on signal performance analysis.
 
 ---
 
+## v1.1.0 (2026-01-16)
+
+### HIGH PRIORITY: Trend Reversal + Volume Pullback Pattern
+
+**New Feature:**
+Added highest-priority pattern detection for Trend Reversal + Volume Pullback.
+This pattern is checked FIRST before all other signal logic.
+
+**Pattern Description:**
+1. PRIOR DOWNTREND: Stock has resistance high 5-10 days before push
+2. BREAKOUT PUSH: 3+ green candles with increasing volume BREAKING ABOVE prior resistance
+3. PULLBACK: Higher low near EMA9 with DECREASING volume (key!)
+4. TRIGGER: Green candle with volume EXPANSION
+
+**Pattern Parameters:**
+- Prior resistance lookback: 5-15 days before push
+- Must break above prior resistance (breakout confirmation)
+- Pullback should hold above prior resistance (now support)
+- Min green candles in push: 3
+- Max pullback bars: 5
+- EMA9 proximity tolerance: 4%
+- Max pullback depth: 10%
+- Volume divergence threshold: < 0.85 (pullback vol / push vol)
+- Breakout volume threshold: > 1.2x (vs pullback avg)
+
+**Exit Strategy (built into signal):**
+- T1: Previous push high (sell 50%)
+- Wait for consolidation
+- Re-entry: Near EMA9
+
+**Reasoning:**
+- User identified this pattern from UMAC chart (2026-01-16)
+- Breakout from prior resistance confirms trend reversal
+- Prior resistance becomes support
+- Volume divergence confirms healthy pullback vs distribution
+- High win-rate pattern with clear entry/exit levels
+- Used successfully in momentum stocks breaking out of bases
+
+**Files Changed:**
+- `tools/scanner.py`: Added `detect_volume_pullback_pattern()` function
+- `src/signals/entry/volume_pullback_entry.py`: New entry signal class
+- `docs/LESSONS_LEARNED.md`: Documented pattern
+
+---
+
 ## v1.0.0 (2026-01-14)
 
 ### Initial Release

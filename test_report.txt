@@ -1,0 +1,58 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.2, pytest-9.0.2, pluggy-1.6.0 -- /Users/francisyang/Downloads/trading_agent/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/francisyang/Downloads/trading_agent
+plugins: timeout-2.4.0, asyncio-1.3.0
+timeout: 120.0s
+timeout method: signal
+timeout func_only: False
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 62 items / 17 deselected / 45 selected
+
+tests/e2e/test_connection.py::TestConnectionBasics::test_initial_connection PASSED [  2%]
+tests/e2e/test_connection.py::TestConnectionBasics::test_connection_already_connected PASSED [  4%]
+tests/e2e/test_connection.py::TestConnectionBasics::test_graceful_shutdown PASSED [  6%]
+tests/e2e/test_connection.py::TestConnectionBasics::test_connection_config_from_env PASSED [  8%]
+tests/e2e/test_connection.py::TestReconnection::test_reconnect_backoff_timing PASSED [ 11%]
+tests/e2e/test_connection.py::TestHeartbeat::test_heartbeat_failure_triggers_reconnect PASSED [ 13%]
+tests/e2e/test_connection.py::TestStateManagement::test_state_transitions PASSED [ 15%]
+tests/e2e/test_connection.py::TestStateManagement::test_get_status PASSED [ 17%]
+tests/e2e/test_connection.py::TestConcurrentAccess::test_concurrent_connect_calls PASSED [ 20%]
+tests/e2e/test_connection.py::TestConcurrentAccess::test_wait_for_connection PASSED [ 22%]
+tests/e2e/test_connection.py::TestEventCallbacks::test_connected_callback PASSED [ 24%]
+tests/e2e/test_connection.py::TestEventCallbacks::test_disconnected_callback PASSED [ 26%]
+tests/e2e/test_connection.py::TestEventCallbacks::test_callback_exception_handling PASSED [ 28%]
+tests/e2e/test_data.py::TestHistoricalData::test_fetch_daily_data PASSED [ 31%]
+tests/e2e/test_data.py::TestHistoricalData::test_fetch_intraday_data PASSED [ 33%]
+tests/e2e/test_data.py::TestHistoricalData::test_fetch_multiple_symbols PASSED [ 35%]
+tests/e2e/test_data.py::TestHistoricalData::test_invalid_bar_size PASSED [ 37%]
+tests/e2e/test_data.py::TestCurrentPrice::test_get_current_price PASSED  [ 40%]
+tests/e2e/test_data.py::TestCurrentPrice::test_get_prices_multiple_symbols PASSED [ 42%]
+tests/e2e/test_data.py::TestRealTimeData::test_unsubscribe_bars PASSED   [ 44%]
+tests/e2e/test_data.py::TestRealTimeData::test_unsubscribe_all PASSED    [ 46%]
+tests/e2e/test_data.py::TestContractCaching::test_contract_caching PASSED [ 48%]
+tests/e2e/test_data.py::TestDataErrorHandling::test_invalid_symbol PASSED [ 51%]
+tests/e2e/test_data.py::TestDataErrorHandling::test_not_connected_returns_empty PASSED [ 53%]
+tests/e2e/test_orders.py::TestMarketOrders::test_market_order_buy PASSED [ 55%]
+tests/e2e/test_orders.py::TestMarketOrders::test_market_order_sell PASSED [ 57%]
+tests/e2e/test_orders.py::TestMarketOrders::test_market_order_fill_callback PASSED [ 60%]
+tests/e2e/test_orders.py::TestLimitOrders::test_limit_order_submit PASSED [ 62%]
+tests/e2e/test_orders.py::TestStopOrders::test_stop_order_submit PASSED  [ 64%]
+tests/e2e/test_orders.py::TestOrderCancellation::test_cancel_limit_order PASSED [ 66%]
+tests/e2e/test_orders.py::TestOrderCancellation::test_cancel_all_orders PASSED [ 68%]
+tests/e2e/test_orders.py::TestOrderTracking::test_get_pending_orders PASSED [ 71%]
+tests/e2e/test_orders.py::TestOrderTracking::test_order_status_tracking PASSED [ 73%]
+tests/e2e/test_orders.py::TestPositions::test_get_positions PASSED       [ 75%]
+tests/e2e/test_orders.py::TestPositions::test_get_account_summary PASSED [ 77%]
+tests/e2e/test_orders.py::TestPositions::test_get_account_value PASSED   [ 80%]
+tests/e2e/test_orders.py::TestOrderErrorHandling::test_order_not_connected PASSED [ 82%]
+tests/e2e/test_orders.py::TestOrderErrorHandling::test_invalid_order_quantity PASSED [ 84%]
+tests/e2e/test_reliability.py::TestStatusMonitoring::test_connection_status PASSED [ 86%]
+tests/e2e/test_reliability.py::TestStatusMonitoring::test_heartbeat_tracking PASSED [ 88%]
+tests/e2e/test_trading_flow.py::TestMultiStepTrades::test_bracket_order_simulation PASSED [ 91%]
+tests/e2e/test_trading_flow.py::TestMultiStepTrades::test_scale_in_positions PASSED [ 93%]
+tests/e2e/test_trading_flow.py::TestDataToOrderFlow::test_fetch_data_then_analyze PASSED [ 95%]
+tests/e2e/test_trading_flow.py::TestPortfolioIntegration::test_check_position_before_trade PASSED [ 97%]
+tests/e2e/test_trading_flow.py::TestPortfolioIntegration::test_check_buying_power PASSED [100%]
+
+================ 45 passed, 17 deselected in 259.16s (0:04:19) =================

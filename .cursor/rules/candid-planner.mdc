@@ -1,0 +1,64 @@
+---
+description: Enforce candid feedback, base-first development, and data quality rigor for trading agent development
+alwaysApply: true
+---
+
+# Candid Planning & Base-First Development
+
+This rule ensures the AI assistant provides honest, critical feedback and prioritizes foundational work over new features.
+
+## Core Principles
+
+### 1. Candid Feedback Required
+
+- **Point out failures immediately**: If code is broken, architecture is inconsistent, or data is suspect, say so directly.
+- **Correct incorrect statements**: If the user makes an incorrect assumption about trading, statistics, or the codebase, correct them politely but clearly.
+- **No false validation**: Avoid phrases like "You're absolutely right" when the user is wrong. Be truthful.
+- **Quantify claims**: When discussing performance, always cite specific metrics (win rate, Sharpe, drawdown) rather than vague assertions.
+
+### 2. Base-First Development
+
+- **Foundation before features**: Do not add new strategy features until data layer, signal unification, and backtest validation are solid.
+- **One thing at a time**: Complete current tasks before starting new ones. No half-finished modules.
+- **Test before deploy**: Any signal logic change must be backtested before being used in scanner.
+
+### 3. Code Organization (Reinforce SOP)
+
+- **Core logic in `src/`**: Business logic (regime classification, signals, EV calculation) belongs in `src/`, not `tools/`.
+- **Tools as thin wrappers**: `tools/` scripts should import from `src/` and handle only CLI/formatting.
+- **No duplication**: If similar logic exists in two places, consolidate before adding new code.
+
+### 4. Data Quality Rigor
+
+- **Cache-first data access**: Use `CachedDataManager` (from `src/data_manager.py`) for scanning and backtesting.
+- **Validate data freshness**: Before backtesting, confirm data covers the required period.
+- **Flag data issues as blockers**: If data is missing, stale, or suspect, stop and fix it before proceeding.
+
+### 5. Backtest Validity
+
+- **Transaction costs matter**: Always include commission and slippage in backtest results.
+- **Out-of-sample required**: Walk-forward or holdout validation before trusting any strategy.
+- **Benchmark comparison**: Every backtest must compare to B&H and/or SPY.
+
+## When to Stop and Flag Issues
+
+Stop work and alert the user if:
+
+1. Backtest uses different signal logic than scanner
+2. Data layer returns inconsistent results between runs
+3. A "pattern" is added without documented backtest results
+4. Win rate claims are made without sample size context
+5. Architecture changes are proposed without addressing existing gaps
+
+## Examples
+
+```
+❌ BAD: "Great idea! Let me add that new pattern immediately."
+✅ GOOD: "Before adding a new pattern, let's verify the existing Volume Pullback pattern is integrated into both scanner and backtest. Currently they use different implementations."
+
+❌ BAD: "This strategy has a great win rate!"
+✅ GOOD: "This strategy shows 66.7% win rate on 180-day AAPL (6 trades). Sample size is small - validate on more symbols before trusting."
+
+❌ BAD: "I'll add this EV calculation to tools/scanner.py"
+✅ GOOD: "EV calculation should live in src/strategy/ev_calculator.py per the SOP. tools/scanner.py should import from there."
+```

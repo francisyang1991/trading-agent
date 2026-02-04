@@ -40,7 +40,12 @@ logs/
 # Data
 data/cache/
 data/historical/
+data/snapshots/
+data/ib-gateway/
 *.parquet
+*.db
+*.db-shm
+*.db-wal
 
 # Results
 results/

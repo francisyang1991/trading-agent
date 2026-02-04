@@ -1,18 +1,90 @@
-# 🤖 SAIYAN Trading Agent
+# SAIYAN Trading Agent
 
-**Automated Quantitative Trading System for Interactive Brokers**
+**Production-Grade Automated Trading System for Interactive Brokers**
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
 
-## 📋 Overview
+## Overview
 
-A sophisticated portfolio management system built on IBKR API with:
+A comprehensive algorithmic trading system built for IBKR with 24/7 operation capability:
+
+### Core Features
+- **Stocks + Futures Trading** - ES, NQ, CL, GC verified and tested
+- **Web-Based GUI** - Real-time dashboard at http://localhost:8080
+- **Risk Monitoring** - Excess Liquidity, Daily P&L limits, margin tracking
+- **Extended Hours** - Night market trading with outsideRth support
+- **Auto-Reconnection** - Robust connection manager for 24/7 operation
+- **Rate Limiting** - Token bucket algorithm (50 msg/s IBKR limit)
+
+### Analysis Features
 - **Multi-timeframe analysis** (5min → Weekly)
 - **Volume-Price Expansion Score (VPES)** custom indicator
 - **Stock classification system** (Trend/Range/Reversal)
-- **Intelligent position management** with pullback entry
 - **Comprehensive backtesting** with parameter optimization
-- **Real-time risk control** and circuit breakers
+
+---
+
+## Quick Start
+
+### 1. Start Trading GUI
+
+```bash
+# Ensure IB Gateway is running on port 4002 (paper)
+python -m tools.trading_gui
+# Open http://localhost:8080
+```
+
+### 2. Download Historical Data
+
+```bash
+# Download S&P 500 universe (500 symbols)
+python -m tools.snapshot_universe --theme sp500 --days 365
+```
+
+### 3. Run Backtest
+
+```bash
+python backtest_runner.py --symbol AAPL --start 2025-01-01 --end 2026-01-01
+```
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | Current capabilities and improvement roadmap |
+| [GCP_DEPLOYMENT.md](docs/GCP_DEPLOYMENT.md) | Google Cloud deployment guide |
+| [TRADING_SYSTEM_V2.md](docs/TRADING_SYSTEM_V2.md) | E2E testing and async architecture |
+| [IBKR API Design](docs/IBKR%20API%20美股股票%2B期货程序化交易系统设计报告.md) | Comprehensive system design (Chinese) |
+
+---
+
+## Trading GUI Features
+
+| Feature | Description |
+|---------|-------------|
+| **Connection Health** | 5-state indicator, heartbeat, API rate |
+| **Account Dashboard** | Net Liquidation, Cash, Buying Power |
+| **Risk Panel** | Excess Liquidity warnings, Daily P&L limits |
+| **Order Placement** | Market, Limit, Stop, Stop-Limit orders |
+| **Quick Actions** | Close 50%/100%, Flatten All, Cancel All |
+| **Extended Hours** | Toggle for night market trading |
+| **Futures Support** | ES, NQ, CL, GC with expiry selection |
+
+---
+
+## Verified Futures Contracts
+
+| Symbol | Name | Exchange | Multiplier | Status |
+|--------|------|----------|------------|--------|
+| ES | S&P 500 E-mini | CME | $50 | Verified |
+| NQ | Nasdaq 100 E-mini | CME | $20 | Verified |
+| CL | Crude Oil | NYMEX | 1000 bbl | Verified |
+| GC | Gold | COMEX | 100 oz | Verified |
 
 ---
 
@@ -222,15 +294,41 @@ timeframes:
 
 ---
 
-## ⚠️ Risk Warnings
+---
+
+## Deployment Options
+
+### Local Development
+```bash
+IB_CLIENT_ID=90 python -m tools.trading_gui
+```
+
+### Docker Deployment
+```bash
+docker-compose up -d
+```
+
+### Google Cloud (24/7)
+See [GCP_DEPLOYMENT.md](docs/GCP_DEPLOYMENT.md) for full guide.
+
+```bash
+# Quick start
+gcloud compute instances create trading-vm --machine-type=e2-medium --zone=us-east1-b
+# Cost: ~$40/month
+```
+
+---
+
+## Risk Warnings
 
 - This system is for educational and research purposes
 - Past performance does not guarantee future results
 - Always start with paper trading
 - Never risk more than you can afford to lose
+- Futures use leverage - position sizing is critical
 
 ---
 
-## 📝 License
+## License
 
 MIT License - See LICENSE file for details.

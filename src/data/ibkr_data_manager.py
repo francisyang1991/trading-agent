@@ -1,6 +1,16 @@
 """
-Multi-Timeframe Data Manager
-Handles data aggregation, caching, and synchronization across timeframes.
+IBKR Multi-Timeframe Data Manager
+=================================
+
+This module provides multi-timeframe OHLCV data management for IBKR live trading.
+It handles data aggregation, caching, and synchronization across timeframes.
+
+NOTE: For scanning and backtesting, prefer using CachedDataManager from
+src/data_manager.py which uses SQLite + yfinance for daily data.
+
+Use the factory function get_data_manager() from src/data/__init__.py:
+    from src.data import get_data_manager
+    dm = get_data_manager("ibkr", ibkr_client=my_client)
 """
 
 import os
