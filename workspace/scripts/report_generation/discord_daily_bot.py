@@ -103,7 +103,7 @@ RULES:
 
 Format:
 ```
-🎯 **PRE-CLOSE BRIEFING** | {date}
+🎯 **PRE-CLOSE BRIEFING** | [TODAY'S DATE]
 
 🔥 **HOT TODAY**
 • $TICKER [LONG] - reason (Source)
