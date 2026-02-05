@@ -69,3 +69,10 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Workspace - exclude data, keep scripts
+workspace/data/
+workspace/venv/
+workspace/legacy/
+workspace/config/discord_servers.json
+workspace/node_modules/

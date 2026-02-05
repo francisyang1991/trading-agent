@@ -1,0 +1,58 @@
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "google/gemini-3-pro-preview"
+      },
+      "maxConcurrent": 8,
+      "subagents": {
+        "maxConcurrent": 16
+      }
+    }
+  },
+  "web": {
+    "enabled": true
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto"
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "auth": {
+      "token": "GENERATE_WITH_openssl_rand_hex_16"
+    }
+  },
+  "messages": {
+    "ackReactionScope": "group-mentions"
+  },
+  "plugins": {
+    "entries": {
+      "discord": {
+        "enabled": true
+      },
+      "telegram": {
+        "enabled": false
+      },
+      "whatsapp": {
+        "enabled": false
+      }
+    }
+  },
+  "customTools": {
+    "stockAnalysis": {
+      "script": "~/workspace/scripts/stock_message_analyzer.js",
+      "description": "Analyze Discord channels for stock trading signals"
+    },
+    "polymarketResearch": {
+      "script": "~/workspace/scripts/polymarket_research.py",
+      "description": "Research Polymarket prediction markets"
+    }
+  },
+  "security": {
+    "useSecretsManager": true,
+    "secretsPath": "openclaw/production/api-keys",
+    "auditLogging": true
+  }
+}

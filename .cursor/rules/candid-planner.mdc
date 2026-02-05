@@ -21,6 +21,7 @@ This rule ensures the AI assistant provides honest, critical feedback and priori
 - **Foundation before features**: Do not add new strategy features until data layer, signal unification, and backtest validation are solid.
 - **One thing at a time**: Complete current tasks before starting new ones. No half-finished modules.
 - **Test before deploy**: Any signal logic change must be backtested before being used in scanner.
+- **Real production testing**: Always run real production tests against actual Discord channels, APIs, and data sources. Never use mock/fake tests when validating production functionality.
 
 ### 3. Code Organization (Reinforce SOP)
 
@@ -61,4 +62,7 @@ Stop work and alert the user if:
 
 ❌ BAD: "I'll add this EV calculation to tools/scanner.py"
 ✅ GOOD: "EV calculation should live in src/strategy/ev_calculator.py per the SOP. tools/scanner.py should import from there."
+
+❌ BAD: "I'll test with mock Discord messages to verify the parser works."
+✅ GOOD: "I'll connect to the real Discord channels and parse actual messages to verify the parser works correctly in production."
 ```

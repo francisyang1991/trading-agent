@@ -58,6 +58,7 @@ python backtest_runner.py --symbol AAPL --start 2025-01-01 --end 2026-01-01
 |----------|-------------|
 | [PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | Current capabilities and improvement roadmap |
 | [GCP_DEPLOYMENT.md](docs/GCP_DEPLOYMENT.md) | Google Cloud deployment guide |
+| [DEPLOYMENT_LESSONS.md](docs/DEPLOYMENT_LESSONS.md) | **Critical** - Cloud deployment troubleshooting guide |
 | [TRADING_SYSTEM_V2.md](docs/TRADING_SYSTEM_V2.md) | E2E testing and async architecture |
 | [IBKR API Design](docs/IBKR%20API%20美股股票%2B期货程序化交易系统设计报告.md) | Comprehensive system design (Chinese) |
 
@@ -298,6 +299,9 @@ timeframes:
 
 ## Deployment Options
 
+> **Before deploying to cloud: Read [DEPLOYMENT_LESSONS.md](docs/DEPLOYMENT_LESSONS.md)**
+> Contains critical lessons from real deployments - environment variables, port configuration, healthcheck workarounds.
+
 ### Local Development
 ```bash
 IB_CLIENT_ID=90 python -m tools.trading_gui
@@ -305,7 +309,7 @@ IB_CLIENT_ID=90 python -m tools.trading_gui
 
 ### Docker Deployment
 ```bash
-docker-compose up -d
+docker compose up -d  # Note: use 'docker compose' (with space), not 'docker-compose'
 ```
 
 ### Google Cloud (24/7)
@@ -315,6 +319,17 @@ See [GCP_DEPLOYMENT.md](docs/GCP_DEPLOYMENT.md) for full guide.
 # Quick start
 gcloud compute instances create trading-vm --machine-type=e2-medium --zone=us-east1-b
 # Cost: ~$40/month
+```
+
+### OpenClaw AI Assistant (AWS)
+See [OPENCLAW_AWS_DEPLOYMENT.md](docs/OPENCLAW_AWS_DEPLOYMENT.md) for full guide.
+
+Deploy OpenClaw AI assistant on AWS EC2 with Discord/Telegram/WhatsApp integration.
+
+```bash
+# Quick start
+aws ec2 run-instances --instance-type t3.small --image-id ami-xxx
+# Cost: ~$18/month (Free Tier eligible)
 ```
 
 ---

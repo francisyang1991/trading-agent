@@ -39,6 +39,9 @@ _connect_time = None
 _message_count = 0
 _last_rate_reset = time.time()
 _daily_start_equity = None
+_pnl_subscriptions = {}  # Track PnL subscriptions for positions
+_watchlist = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"]  # Default watchlist
+_market_data = {}  # Cache for market data
 
 
 def init_ib():
@@ -337,7 +340,14 @@ HTML_TEMPLATE = """
         .asset-tab.active { background: #0d1117; color: #58a6ff; }
         
         /* Position Actions */
-        .position-actions { display: flex; gap: 4px; }
+        .position-actions { display: flex; gap: 4px; white-space: nowrap; }
+        
+        /* Table column widths */
+        table { width: 100%; border-collapse: collapse; table-layout: auto; }
+        table th:last-child, table td:last-child { 
+            text-align: right; 
+            min-width: 100px;
+        }
         
         /* Utilities */
         .text-green { color: #3fb950; }
@@ -601,6 +611,35 @@ HTML_TEMPLATE = """
                     </tbody>
                 </table>
             </div>
+            
+            <!-- Market Watchlist -->
+            <div class="card">
+                <h2>Market Watch
+                    <button class="btn btn-sm refresh-btn" onclick="fetchWatchlist()" style="float:right;">Refresh</button>
+                </h2>
+                <div style="margin-bottom: 12px;">
+                    <input type="text" id="watchlist-input" placeholder="Add symbol (e.g. AAPL)" 
+                           style="width: calc(100% - 80px); display: inline-block;"
+                           onkeypress="if(event.key==='Enter'){addToWatchlist();}">
+                    <button class="btn btn-sm primary" onclick="addToWatchlist()" style="width: 70px;">Add</button>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Last</th>
+                            <th>Bid</th>
+                            <th>Ask</th>
+                            <th>Change</th>
+                            <th>%</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="watchlist-table">
+                        <tr><td colspan="7" class="text-muted" style="text-align:center;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
     
@@ -831,17 +870,19 @@ HTML_TEMPLATE = """
                     document.getElementById('cash').textContent = formatCurrency(accountData.total_cash);
                     document.getElementById('buying-power').textContent = formatCurrency(accountData.buying_power);
                     
+                    // Unrealized P&L from open positions
                     const unrealizedPnl = accountData.unrealized_pnl || 0;
                     document.getElementById('unrealized-pnl').textContent = formatCurrency(unrealizedPnl);
                     document.getElementById('unrealized-pnl').className = 'account-value ' + (unrealizedPnl >= 0 ? 'positive' : 'negative');
                     
-                    const dayPnl = accountData.realized_pnl || 0;
+                    // Day P&L = realized + unrealized (total daily change)
+                    const dayPnl = accountData.day_pnl || (accountData.realized_pnl || 0) + (accountData.unrealized_pnl || 0);
                     document.getElementById('day-pnl').textContent = formatCurrency(dayPnl);
                     document.getElementById('day-pnl').className = 'account-value ' + (dayPnl >= 0 ? 'positive' : 'negative');
                     
-                    // Calculate day P&L %
-                    const netLiq = accountData.net_liquidation || 1;
-                    const dayPnlPct = (dayPnl / netLiq) * 100;
+                    // Calculate day P&L % based on start equity
+                    const startEquity = accountData.start_equity || accountData.net_liquidation || 1;
+                    const dayPnlPct = (dayPnl / startEquity) * 100;
                     document.getElementById('day-pnl-pct').textContent = formatPct(dayPnlPct);
                     document.getElementById('day-pnl-pct').className = 'account-value ' + (dayPnlPct >= 0 ? 'positive' : 'negative');
                     
@@ -857,7 +898,8 @@ HTML_TEMPLATE = """
             const netLiq = data.net_liquidation || 1;
             const excessLiq = data.excess_liquidity || 0;
             const buyingPower = data.buying_power || 0;
-            const dayPnl = data.realized_pnl || 0;
+            // Use day_pnl which includes both realized and unrealized
+            const dayPnl = data.day_pnl || ((data.realized_pnl || 0) + (data.unrealized_pnl || 0));
             
             // Excess Liquidity
             document.getElementById('excess-liq').textContent = formatCurrency(excessLiq);
@@ -910,18 +952,19 @@ HTML_TEMPLATE = """
                 tbody.innerHTML = positionsData.map(pos => {
                     const pctPort = ((pos.market_value || 0) / netLiq * 100).toFixed(1);
                     const pctClass = pctPort > 10 ? 'text-yellow' : '';
+                    const secType = pos.sec_type || 'STK';
                     
                     return `
                         <tr>
-                            <td><strong>${pos.symbol}</strong></td>
+                            <td><strong>${pos.symbol}</strong><span class="text-muted" style="font-size:10px;margin-left:4px;">${secType}</span></td>
                             <td class="${pos.quantity >= 0 ? 'text-green' : 'text-red'}">${pos.quantity}</td>
                             <td>${formatCurrency(pos.avg_cost)}</td>
                             <td>${formatCurrency(pos.market_value)}</td>
                             <td>${formatPnl(pos.pnl)}</td>
                             <td class="${pctClass}">${pctPort}%</td>
                             <td class="position-actions">
-                                <button class="btn btn-sm" onclick="closePosition('${pos.symbol}', ${pos.quantity}, 0.5)">50%</button>
-                                <button class="btn btn-sm danger" onclick="closePosition('${pos.symbol}', ${pos.quantity}, 1)">Close</button>
+                                <button class="btn btn-sm" onclick="closePosition('${pos.symbol}', ${pos.quantity}, 0.5, '${secType}')">50%</button>
+                                <button class="btn btn-sm danger" onclick="closePosition('${pos.symbol}', ${pos.quantity}, 1, '${secType}')">Close</button>
                             </td>
                         </tr>
                     `;
@@ -999,18 +1042,21 @@ HTML_TEMPLATE = """
             }
         }
         
-        async function closePosition(symbol, quantity, fraction) {
+        async function closePosition(symbol, quantity, fraction, secType) {
             const qty = Math.abs(Math.floor(quantity * fraction));
             if (qty === 0) return;
             
             const action = quantity > 0 ? 'SELL' : 'BUY';
+            
+            // Determine asset type - futures have secType 'FUT'
+            const assetType = (secType === 'FUT') ? 'futures' : 'stock';
             
             try {
                 const response = await fetch('/api/order', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        asset_type: 'stock',
+                        asset_type: assetType,
                         symbol: symbol,
                         quantity: qty,
                         action: action,
@@ -1021,7 +1067,11 @@ HTML_TEMPLATE = """
                 const data = await response.json();
                 if (data.success) {
                     showMessage(`Closing ${qty} ${symbol}`, 'success');
-                    fetchPositions();
+                    // Auto-refresh after delay to allow order to fill
+                    setTimeout(() => {
+                        fetchPositions();
+                        fetchAccount();
+                    }, 1500);
                     fetchOrders();
                 } else {
                     showMessage(`Failed: ${data.error}`, 'error');
@@ -1074,14 +1124,110 @@ HTML_TEMPLATE = """
             fetchOrders();
         }
         
+        // Watchlist functions
+        let watchlistSymbols = [];
+        
+        async function fetchWatchlist() {
+            try {
+                const response = await fetch('/api/watchlist');
+                const data = await response.json();
+                
+                watchlistSymbols = data.symbols || [];
+                const tbody = document.getElementById('watchlist-table');
+                
+                if (!data.data || data.data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center;">No symbols in watchlist</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = data.data.map(item => {
+                    const changeClass = item.change >= 0 ? 'text-green' : 'text-red';
+                    const changePrefix = item.change >= 0 ? '+' : '';
+                    
+                    return `
+                        <tr>
+                            <td><strong>${item.symbol}</strong></td>
+                            <td>${item.last > 0 ? formatCurrency(item.last) : '--'}</td>
+                            <td class="text-muted">${item.bid > 0 ? formatCurrency(item.bid) : '--'}</td>
+                            <td class="text-muted">${item.ask > 0 ? formatCurrency(item.ask) : '--'}</td>
+                            <td class="${changeClass}">${item.last > 0 ? changePrefix + formatCurrency(item.change) : '--'}</td>
+                            <td class="${changeClass}">${item.last > 0 ? changePrefix + item.change_pct.toFixed(2) + '%' : '--'}</td>
+                            <td>
+                                <button class="btn btn-sm" onclick="quickBuy('${item.symbol}')">Buy</button>
+                                <button class="btn btn-sm text-red" onclick="removeFromWatchlist('${item.symbol}')" style="padding:4px 6px;">✕</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } catch (e) {
+                console.error('Failed to fetch watchlist:', e);
+            }
+        }
+        
+        async function addToWatchlist() {
+            const input = document.getElementById('watchlist-input');
+            const symbol = input.value.toUpperCase().trim();
+            
+            if (!symbol) return;
+            if (watchlistSymbols.includes(symbol)) {
+                showMessage(`${symbol} already in watchlist`, 'error');
+                return;
+            }
+            
+            watchlistSymbols.push(symbol);
+            input.value = '';
+            
+            try {
+                await fetch('/api/watchlist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols: watchlistSymbols })
+                });
+                showMessage(`Added ${symbol} to watchlist`, 'success');
+                fetchWatchlist();
+            } catch (e) {
+                showMessage('Failed to update watchlist', 'error');
+            }
+        }
+        
+        async function removeFromWatchlist(symbol) {
+            watchlistSymbols = watchlistSymbols.filter(s => s !== symbol);
+            
+            try {
+                await fetch('/api/watchlist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols: watchlistSymbols })
+                });
+                fetchWatchlist();
+            } catch (e) {
+                showMessage('Failed to update watchlist', 'error');
+            }
+        }
+        
+        function quickBuy(symbol) {
+            // Pre-fill the order form
+            setAssetType('stock');
+            document.getElementById('symbol').value = symbol;
+            document.getElementById('quantity').value = 100;
+            document.getElementById('action').value = 'BUY';
+            document.getElementById('order-type').value = 'MKT';
+            
+            // Scroll to order form
+            document.getElementById('order-form').scrollIntoView({ behavior: 'smooth' });
+            showMessage(`Order form pre-filled for ${symbol}`, 'success');
+        }
+        
         // Setup
         document.getElementById('confirm-order-btn').addEventListener('click', placeOrder);
         document.getElementById('futures-contract').addEventListener('change', updateFuturesExpiries);
         
         // Initial load and auto-refresh
         refreshAll();
+        fetchWatchlist();
         updateFuturesExpiries();
         setInterval(refreshAll, 5000);
+        setInterval(fetchWatchlist, 30000);  // Refresh watchlist every 30 seconds
     </script>
 </body>
 </html>
@@ -1126,8 +1272,8 @@ def api_health():
 
 @app.route('/api/account')
 def api_account():
-    """Get account summary with risk metrics."""
-    global _message_count
+    """Get account summary with risk metrics and proper P&L calculation."""
+    global _message_count, _daily_start_equity
     
     ib = get_ib()
     
@@ -1157,20 +1303,43 @@ def api_account():
             except Exception:
                 pass
             
-            # Get position count
+            # Get position count and calculate total unrealized P&L from portfolio
             ib.reqPositions()
             ib.sleep(0.3)
-            position_count = len([p for p in ib.positions() if p.position != 0])
+            position_count = 0
+            total_unrealized_pnl = 0
+            total_daily_pnl = 0
+            
+            # Use portfolio() for accurate P&L data
+            for pv in ib.portfolio():
+                if pv.position != 0:
+                    position_count += 1
+                    total_unrealized_pnl += pv.unrealizedPNL or 0
+            
+            # Get realized P&L from account summary
+            realized_pnl = float(summary.get("RealizedPnL", 0) or 0)
+            
+            # Day P&L = Realized P&L (closed trades) + Unrealized P&L change today
+            # For a more accurate day P&L, use both values
+            # Note: IBKR's RealizedPnL resets daily, UnrealizedPnL is current
+            day_pnl = realized_pnl + total_unrealized_pnl
+            
+            # Store start equity if not set (for percentage calculation)
+            net_liq = float(summary.get("NetLiquidation", 0) or 0)
+            if _daily_start_equity is None:
+                _daily_start_equity = net_liq - day_pnl
         
         return jsonify({
             "connected": True,
-            "net_liquidation": float(summary.get("NetLiquidation", 0) or 0),
+            "net_liquidation": net_liq,
             "total_cash": float(summary.get("TotalCashValue", 0) or 0),
             "buying_power": float(summary.get("BuyingPower", 0) or 0),
-            "unrealized_pnl": float(summary.get("UnrealizedPnL", 0) or 0),
-            "realized_pnl": float(summary.get("RealizedPnL", 0) or 0),
+            "unrealized_pnl": total_unrealized_pnl,
+            "realized_pnl": realized_pnl,
+            "day_pnl": day_pnl,
             "excess_liquidity": float(summary.get("ExcessLiquidity", 0) or 0),
-            "position_count": position_count
+            "position_count": position_count,
+            "start_equity": _daily_start_equity
         })
     except Exception as e:
         logger.error(f"Failed to get account: {e}")
@@ -1179,7 +1348,7 @@ def api_account():
 
 @app.route('/api/positions')
 def api_positions():
-    """Get current positions with P&L."""
+    """Get current positions with P&L using reqPnLSingle for accurate data."""
     ib = get_ib()
     
     if not ib or not ib.isConnected():
@@ -1194,16 +1363,39 @@ def api_positions():
             positions = []
             for pos in ib.positions():
                 if pos.position != 0:
-                    market_value = abs(pos.position * pos.avgCost)
-                    pnl = 0  # Would need market data subscription for real P&L
+                    # Get contract details
+                    contract = pos.contract
+                    
+                    # Try to get PnL using reqPnLSingle
+                    pnl = 0
+                    unrealized_pnl = 0
+                    market_price = pos.avgCost  # Fallback
+                    
+                    try:
+                        # Request single position PnL
+                        ib.qualifyContracts(contract)
+                        
+                        # Use portfolio() which includes unrealizedPnL
+                        for pv in ib.portfolio():
+                            if pv.contract.conId == contract.conId:
+                                unrealized_pnl = pv.unrealizedPNL or 0
+                                market_price = pv.marketPrice or pos.avgCost
+                                pnl = unrealized_pnl
+                                break
+                    except Exception as e:
+                        logger.debug(f"Could not get PnL for {contract.symbol}: {e}")
+                    
+                    market_value = abs(pos.position * market_price)
                     
                     positions.append({
                         "symbol": pos.contract.symbol,
                         "quantity": int(pos.position),
                         "avg_cost": pos.avgCost,
+                        "market_price": market_price,
                         "market_value": market_value,
                         "pnl": pnl,
-                        "sec_type": pos.contract.secType
+                        "sec_type": pos.contract.secType,
+                        "con_id": contract.conId
                     })
         
         return jsonify(positions)
@@ -1426,6 +1618,92 @@ def api_cancel_all():
         return jsonify({"success": True, "count": count})
     except Exception as e:
         logger.error(f"Failed to cancel all: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/watchlist')
+def api_watchlist():
+    """Get market data for watchlist symbols."""
+    global _watchlist, _market_data
+    
+    ib = get_ib()
+    
+    if not ib or not ib.isConnected():
+        return jsonify({"symbols": _watchlist, "data": {}})
+    
+    try:
+        from ib_async import Stock
+        
+        with _ib_lock:
+            track_api_call()
+            
+            result = []
+            for symbol in _watchlist:
+                contract = Stock(symbol, 'SMART', 'USD')
+                
+                try:
+                    ib.qualifyContracts(contract)
+                    
+                    # Request market data snapshot
+                    ticker = ib.reqMktData(contract, '', True, False)
+                    ib.sleep(0.3)
+                    
+                    last_price = ticker.last or ticker.close or 0
+                    change = 0
+                    change_pct = 0
+                    
+                    if ticker.close and ticker.close > 0:
+                        if ticker.last:
+                            change = ticker.last - ticker.close
+                            change_pct = (change / ticker.close) * 100
+                    
+                    result.append({
+                        "symbol": symbol,
+                        "last": last_price,
+                        "bid": ticker.bid or 0,
+                        "ask": ticker.ask or 0,
+                        "change": change,
+                        "change_pct": change_pct,
+                        "volume": ticker.volume or 0
+                    })
+                    
+                    # Cancel market data to avoid rate limits
+                    ib.cancelMktData(contract)
+                    
+                except Exception as e:
+                    logger.debug(f"Could not get data for {symbol}: {e}")
+                    result.append({
+                        "symbol": symbol,
+                        "last": 0,
+                        "bid": 0,
+                        "ask": 0,
+                        "change": 0,
+                        "change_pct": 0,
+                        "volume": 0,
+                        "error": str(e)
+                    })
+        
+        return jsonify({"symbols": _watchlist, "data": result})
+    except Exception as e:
+        logger.error(f"Failed to get watchlist: {e}")
+        return jsonify({"symbols": _watchlist, "data": [], "error": str(e)})
+
+
+@app.route('/api/watchlist', methods=['POST'])
+def api_update_watchlist():
+    """Update watchlist symbols."""
+    global _watchlist
+    
+    try:
+        data = request.json
+        symbols = data.get('symbols', [])
+        
+        # Validate and clean symbols
+        _watchlist = [s.upper().strip() for s in symbols if s.strip()][:10]  # Max 10 symbols
+        
+        return jsonify({"success": True, "watchlist": _watchlist})
+    except Exception as e:
+        logger.error(f"Failed to update watchlist: {e}")
         return jsonify({"success": False, "error": str(e)})
 
 

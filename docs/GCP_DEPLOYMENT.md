@@ -2,6 +2,10 @@
 
 This guide covers deploying the trading agent system on Google Cloud Platform for 24/7 operation.
 
+> **Before You Start: Read [DEPLOYMENT_LESSONS.md](./DEPLOYMENT_LESSONS.md)**
+>
+> This document contains critical lessons learned from real deployments, including solutions to the 7 most common issues that cause deployments to fail. Every deployment will encounter at least 2-3 of these. Read it first!
+
 ## Architecture Overview
 
 ```
@@ -140,7 +144,7 @@ services:
         condition: service_healthy
     environment:
       - IB_HOST=ibgateway
-      - IB_PORT=4002  # Paper trading
+      - IB_PORT=4004  # Use 4004 (socat proxy) to bypass TrustedIPs restriction!
       - IB_CLIENT_ID=1
       - IB_TRADING_MODE=paper
       - GUI_PORT=8080
@@ -150,6 +154,8 @@ services:
       - ./data:/app/data
       - ./logs/agent:/app/logs
     command: python -m tools.trading_gui
+    # NOTE: If healthcheck is broken, you may need to force-start:
+    # docker start trading-agent
 
 networks:
   default:
@@ -180,16 +186,29 @@ EXPOSE 8080
 CMD ["python", "-m", "tools.trading_gui"]
 ```
 
-### Create Environment File
+### Create Environment Files
+
+**CRITICAL: You need TWO files for Docker Compose to work correctly!**
 
 ```bash
-# Create .env file (NEVER commit this!)
-cat > .env << 'EOF'
+# env.list - Variables loaded INTO containers
+cat > env.list << 'EOF'
 IB_USERNAME=your_ib_username
 IB_PASSWORD=your_ib_password
+IB_TRADING_MODE=paper
+IB_PORT=4004
 EOF
-chmod 600 .env
+
+# .env - Variables for docker-compose ${VAR} substitution
+# (Must be separate file, docker-compose reads this automatically)
+cp env.list .env
+
+chmod 600 .env env.list
 ```
+
+> **Why two files?** `env_file` loads variables into the container's environment,
+> but `${VAR}` substitutions in docker-compose.yaml read from the HOST environment
+> or `.env` file. See [DEPLOYMENT_LESSONS.md](./DEPLOYMENT_LESSONS.md#lesson-1-docker-compose-environment-variable-substitution).
 
 ## Step 5: Deploy and Start Services
 
@@ -334,6 +353,9 @@ docker exec ibgateway netstat -an | grep 4002
 
 ## Troubleshooting
 
+> **CRITICAL: Read [DEPLOYMENT_LESSONS.md](./DEPLOYMENT_LESSONS.md) before debugging!**
+> It contains solutions to the 7 most common deployment issues.
+
 ### IB Gateway Won't Connect
 
 1. Check credentials in `.env`
@@ -341,11 +363,48 @@ docker exec ibgateway netstat -an | grep 4002
 3. Check if IP is whitelisted in IBKR settings
 4. View VNC at port 5900 for visual debugging
 
-### Trading Agent Can't Reach Gateway
+### Trading Agent Can't Reach Gateway (TimeoutError)
 
-1. Verify Docker network: `docker network inspect trading-agent_default`
-2. Check gateway health: `docker exec ibgateway nc -z localhost 4002`
-3. Ensure `IB_HOST=ibgateway` (not localhost)
+**Most common cause: TrustedIPs restriction**
+
+The IB Gateway's `jts.ini` has `TrustedIPs=127.0.0.1`, which blocks connections from other Docker containers.
+
+**Solution: Use port 4004 instead of 4002**
+
+```bash
+# In .env and env.list
+IB_PORT=4004  # Uses socat proxy that bypasses TrustedIPs
+```
+
+See [DEPLOYMENT_LESSONS.md - Lesson 2](./DEPLOYMENT_LESSONS.md#lesson-2-ib-gateway-trustedips-blocks-docker-network) for details.
+
+### Container Stuck at "health: starting"
+
+The `gnzsnz/ib-gateway` image's healthcheck uses `nc` which isn't installed. The healthcheck will never pass.
+
+**Solution: Force-start dependent containers**
+
+```bash
+# Check if gateway logged in
+docker logs saiyan-ibgateway | grep "Login has completed"
+
+# If yes, force start
+docker start saiyan-agent
+```
+
+### Environment Variable Warnings
+
+```
+WARN: The "IB_USERNAME" variable is not set
+```
+
+**Cause:** `${VAR}` substitution in docker-compose.yaml reads from host environment, not `env_file`.
+
+**Solution:** Create `.env` file (separate from `env.list`):
+
+```bash
+cp env.list .env
+```
 
 ### High Latency
 

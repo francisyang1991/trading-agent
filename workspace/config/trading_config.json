@@ -1,0 +1,91 @@
+{
+  "portfolio": {
+    "totalCapital": 100000,
+    "currency": "USD"
+  },
+  "positionSizing": {
+    "method": "fixed_fractional",
+    "maxRiskPerTrade": 0.02,
+    "maxPositionPct": 0.10,
+    "maxPortfolioRisk": 0.06,
+    "kellyFraction": 0.25,
+    "targetVolatility": 0.15,
+    "reduceInHighVol": true,
+    "volReductionFactor": 0.5
+  },
+  "signals": {
+    "minConfidenceScore": 60,
+    "highConfidenceThreshold": 80,
+    "defaultHoldingDays": 5,
+    "maxHoldingDays": 20,
+    "defaultStopLossPct": 0.05,
+    "defaultTarget1Pct": 0.08,
+    "defaultTarget2Pct": 0.15,
+    "minMentionsForSignal": 2,
+    "sentimentWeights": {
+      "bullish": 1.0,
+      "bearish": -1.0,
+      "neutral": 0.0
+    }
+  },
+  "options": {
+    "enabled": true,
+    "preferredDTE": 30,
+    "minDTE": 14,
+    "maxDTE": 60,
+    "deltaRange": {
+      "conservative": [0.3, 0.4],
+      "moderate": [0.4, 0.5],
+      "aggressive": [0.5, 0.7]
+    },
+    "preferredStrategy": "moderate",
+    "maxContractsPerTrade": 10,
+    "minOpenInterest": 100,
+    "useCallsForBullish": true,
+    "usePutsForBearish": true
+  },
+  "confidence": {
+    "weights": {
+      "sentimentStrength": 0.25,
+      "authorReliability": 0.30,
+      "historicalAccuracy": 0.25,
+      "volumeOfMentions": 0.20
+    },
+    "authorReliability": {
+      "minSignalsForScore": 5,
+      "defaultScore": 50,
+      "decayDays": 90
+    },
+    "historicalAccuracy": {
+      "lookbackDays": 30,
+      "minDataPoints": 3
+    }
+  },
+  "realtime": {
+    "enabled": true,
+    "pollIntervalMinutes": 5,
+    "maxMessagesPerPoll": 100,
+    "alertOnHighConfidence": true,
+    "alertThreshold": 75
+  },
+  "historical": {
+    "defaultDaysBack": 1,
+    "maxDaysBack": 30,
+    "batchSize": 500
+  },
+  "validation": {
+    "autoCheckEnabled": true,
+    "autoCheckIntervalHours": 6,
+    "maxDaysToCheck": 30,
+    "targetHitThreshold": 0.95,
+    "stopHitThreshold": 1.0,
+    "expiredAfterDays": 20
+  },
+  "output": {
+    "saveToFile": true,
+    "outputDir": "../data/signals",
+    "formats": ["json", "txt"],
+    "includeSourceMessages": true,
+    "maxSourceMessagesPerSignal": 10
+  }
+}

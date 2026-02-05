@@ -33,6 +33,9 @@ pytz>=2024.1            # Timezone handling
 loguru>=0.7.2
 rich>=13.7.0
 
+# Web Framework
+flask>=3.0.0
+
 # News API (optional)
 newsapi-python>=0.2.7
 feedparser>=6.0.10
