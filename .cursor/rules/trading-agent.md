@@ -62,6 +62,22 @@ gcloud compute ssh trading-vm --zone=us-east1-b
 - **Cron**: `50 19 * * 1-5`
 - **Script**: workspace/scripts/report_generation/discord_daily_bot.py
 
+### Interactive Bot (responds to @mentions)
+- **Script**: workspace/scripts/discord_bot/interactive_bot.py
+- **Service**: trading-bot.service (systemd on AWS)
+- **Commands**:
+  - `@bot $TICKER` - Deep analysis of a stock
+  - `!analyze TICKER` - Same as above
+  - `!signals TICKER` - List recent signals
+  - `!help_trading` - Show help
+
+### Discord Bot Setup (Required)
+1. Go to https://discord.com/developers/applications
+2. Select your bot application
+3. Go to **Bot** section
+4. Enable **MESSAGE CONTENT INTENT** under Privileged Gateway Intents
+5. Save changes
+
 ### Sync Commands
 ```bash
 # Sync to AWS
