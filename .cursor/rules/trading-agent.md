@@ -12,5 +12,61 @@
 - Avoid direct `yfinance` calls in backtests unless the cache layer is unavailable; prefer fixing the cache layer instead.
 
 ### Scanner output quality
-- Do not present a symbol as an “opportunity” unless it is **tradeable by our defined criteria**.
+- Do not present a symbol as an "opportunity" unless it is **tradeable by our defined criteria**.
 - If a pattern is detected but not tradeable yet, **show it as WAIT with explicit blockers/reasons** (e.g., late entry, weak trigger volume, weak breakout, poor R:R).
+
+---
+
+## Infrastructure & Deployment (persistent)
+
+### AWS OpenClaw Instance
+- **Region**: us-west-2 (Oregon)
+- **IP**: 35.90.4.89
+- **SSH Key**: ~/.ssh/openclaw-key.pem
+- **User**: ubuntu
+- **Path**: /home/ubuntu/trading-agent
+
+**SSH Command:**
+```bash
+ssh -i ~/.ssh/openclaw-key.pem ubuntu@35.90.4.89
+```
+
+### GCloud Trading VM
+- **Zone**: us-east1-b
+- **VM Name**: trading-vm
+- **Path**: /home/ubuntu/trading-agent
+
+**SSH Command:**
+```bash
+gcloud compute ssh trading-vm --zone=us-east1-b
+```
+
+### Discord Configuration
+- **Rich or Die Channel**: 1345123472019423284
+- **Bot Token**: Set in environment variable `DISCORD_BOT_TOKEN`
+- **User Token**: Set in environment variable `DISCORD_USER_TOKEN` (for scraping)
+
+### Signal Sources (Discord Servers)
+- **Goku Server** (Technical Analysis):
+  - Channel IDs: 1277321989874385029, 1411717415565393970, 1227315745352847461
+- **Wilson Server** (Fundamental Analysis):
+  - Channel ID: 1211549165629476924
+
+### API Keys (Environment Variables)
+- `DISCORD_BOT_TOKEN` - Discord bot for posting to Rich or Die
+- `DISCORD_USER_TOKEN` - Discord user token for scraping Goku/Wilson
+- `MINIMAX_API_KEY` - MiniMax LLM for analysis
+
+### Daily Bot Schedule
+- **Time**: 11:50 AM PST (19:50 UTC) Monday-Friday
+- **Cron**: `50 19 * * 1-5`
+- **Script**: workspace/scripts/report_generation/discord_daily_bot.py
+
+### Sync Commands
+```bash
+# Sync to AWS
+./scripts/sync_to_aws.sh
+
+# Sync to GCloud
+./scripts/sync_to_gcloud.sh
+```

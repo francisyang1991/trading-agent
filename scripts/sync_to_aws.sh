@@ -2,7 +2,7 @@
 # Sync workspace to OpenClaw AWS instance
 # Usage: ./sync_to_aws.sh
 
-AWS_HOST="ubuntu@YOUR_AWS_IP"
+AWS_HOST="ubuntu@35.90.4.89"
 AWS_KEY="~/.ssh/openclaw-key.pem"
 REMOTE_DIR="/home/ubuntu/trading-agent"
 
