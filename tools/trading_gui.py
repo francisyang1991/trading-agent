@@ -21,6 +21,8 @@ import os
 import time
 import threading
 import asyncio
+import hashlib
+import hmac
 from datetime import datetime
 from typing import Dict, Any, Optional
 from flask import Flask, render_template_string, jsonify, request
@@ -42,6 +44,8 @@ _daily_start_equity = None
 _pnl_subscriptions = {}  # Track PnL subscriptions for positions
 _watchlist = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"]  # Default watchlist
 _market_data = {}  # Cache for market data
+_pending_entries = []  # Conditional entries waiting for prior fill + confirmation
+_pending_lock = threading.Lock()
 
 
 def init_ib():
@@ -467,107 +471,20 @@ HTML_TEMPLATE = """
                         <div class="account-value" id="position-count">0</div>
                     </div>
                 </div>
-                <div class="btn-group">
-                    <button class="btn danger btn-sm" onclick="flattenAll()">Flatten All Positions</button>
-                    <button class="btn warning btn-sm" onclick="cancelAllOrders()">Cancel All Orders</button>
                 </div>
             </div>
             
-            <!-- Place Order -->
+            <!-- Order Info (orders are placed via Discord bot) -->
             <div class="card">
-                <h2>Place Order</h2>
-                
-                <!-- Asset Type Tabs -->
-                <div class="asset-tabs">
-                    <div class="asset-tab active" data-type="stock" onclick="setAssetType('stock')">Stocks</div>
-                    <div class="asset-tab" data-type="futures" onclick="setAssetType('futures')">Futures</div>
+                <h2>Order Execution</h2>
+                <p class="text-muted" style="margin: 8px 0; font-size: 13px;">
+                    Orders are placed via the <strong>Discord bot</strong>.<br>
+                    Use commands like: <code>@bot buy HOOD 5000usd</code>
+                </p>
+                <div class="btn-group" style="gap: 8px;">
+                    <button class="btn warning btn-sm" onclick="cancelAllOrders()">Cancel All Orders</button>
+                    <button class="btn danger btn-sm" onclick="flattenAll()">Flatten All</button>
                 </div>
-                
-                <form id="order-form" onsubmit="showOrderConfirmation(event)">
-                    <input type="hidden" id="asset-type" value="stock">
-                    
-                    <!-- Stock Symbol -->
-                    <div id="stock-fields">
-                        <div class="form-row">
-                            <div>
-                                <label>Symbol</label>
-                                <input type="text" id="symbol" placeholder="AAPL" style="text-transform: uppercase;">
-                            </div>
-                            <div>
-                                <label>Quantity</label>
-                                <input type="number" id="quantity" placeholder="100" min="1">
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Futures Fields -->
-                    <div id="futures-fields" style="display: none;">
-                        <div class="form-row">
-                            <div>
-                                <label>Contract</label>
-                                <select id="futures-contract">
-                                    <option value="ES">ES - S&P 500</option>
-                                    <option value="NQ">NQ - Nasdaq 100</option>
-                                    <option value="YM">YM - Dow Jones</option>
-                                    <option value="CL">CL - Crude Oil</option>
-                                    <option value="GC">GC - Gold</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label>Expiry</label>
-                                <select id="futures-expiry">
-                                    <option value="">Select expiry...</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div>
-                                <label>Contracts</label>
-                                <input type="number" id="futures-qty" placeholder="1" min="1" value="1">
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="form-row">
-                        <div>
-                            <label>Action</label>
-                            <select id="action">
-                                <option value="BUY">BUY</option>
-                                <option value="SELL">SELL</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label>Order Type</label>
-                            <select id="order-type" onchange="toggleLimitPrice()">
-                                <option value="MKT">Market</option>
-                                <option value="LMT">Limit</option>
-                                <option value="STP">Stop</option>
-                                <option value="STP_LMT">Stop Limit</option>
-                            </select>
-                        </div>
-                    </div>
-                    
-                    <div class="form-row" id="price-fields" style="display: none;">
-                        <div>
-                            <label>Limit Price</label>
-                            <input type="number" id="limit-price" placeholder="0.00" step="0.01">
-                        </div>
-                        <div id="stop-price-field" style="display: none;">
-                            <label>Stop Price</label>
-                            <input type="number" id="stop-price" placeholder="0.00" step="0.01">
-                        </div>
-                    </div>
-                    
-                    <!-- Extended Hours Toggle -->
-                    <div class="form-row" style="align-items: center;">
-                        <div class="toggle-container">
-                            <div class="toggle" id="extended-hours-toggle" onclick="toggleExtendedHours()"></div>
-                            <span class="text-muted">Extended Hours Trading</span>
-                        </div>
-                    </div>
-                    
-                    <button type="submit" class="btn primary" style="width: 100%; margin-top: 12px;">Preview Order</button>
-                </form>
             </div>
             
             <!-- Positions -->
@@ -579,14 +496,15 @@ HTML_TEMPLATE = """
                             <th>Symbol</th>
                             <th>Qty</th>
                             <th>Avg Cost</th>
+                            <th>Mkt Price</th>
                             <th>Market Value</th>
-                            <th>P&L</th>
+                            <th>P&amp;L</th>
                             <th>% Port</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody id="positions-table">
-                        <tr><td colspan="7" class="text-muted" style="text-align:center;">No positions</td></tr>
+                        <tr><td colspan="8" class="text-muted" style="text-align:center;">No positions</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -677,158 +595,18 @@ HTML_TEMPLATE = """
         }
         
         // Asset Type Switching
-        function setAssetType(type) {
-            document.getElementById('asset-type').value = type;
-            document.querySelectorAll('.asset-tab').forEach(tab => {
-                tab.classList.toggle('active', tab.dataset.type === type);
-            });
-            document.getElementById('stock-fields').style.display = type === 'stock' ? 'block' : 'none';
-            document.getElementById('futures-fields').style.display = type === 'futures' ? 'block' : 'none';
-            
-            if (type === 'futures') {
-                updateFuturesExpiries();
-            }
-        }
+        // Order placement removed — orders go through Discord bot.
+        // Stub functions to avoid JS errors from leftover references.
+        function setAssetType() {}
+        function updateFuturesExpiries() {}
+        function toggleExtendedHours() {}
+        function toggleLimitPrice() {}
         
-        function updateFuturesExpiries() {
-            const contract = document.getElementById('futures-contract').value;
-            const expiry = document.getElementById('futures-expiry');
-            
-            // Generate next 4 quarterly expiries
-            // IBKR uses single-digit year format: ESH6 = March 2026
-            const months = ['H', 'M', 'U', 'Z']; // Mar, Jun, Sep, Dec
-            const now = new Date();
-            const year = now.getFullYear() % 10;  // Single digit year (2026 -> 6)
-            const month = now.getMonth();
-            
-            expiry.innerHTML = '';
-            for (let i = 0; i < 4; i++) {
-                const idx = Math.floor((month + i * 3) / 3) % 4;
-                const y = (year + Math.floor((month + i * 3) / 12)) % 10;
-                const code = months[idx] + y;
-                const fullYear = 2020 + (year + Math.floor((month + i * 3) / 12));
-                const opt = document.createElement('option');
-                opt.value = code;
-                opt.textContent = code + ' (' + fullYear + ')';
-                expiry.appendChild(opt);
-            }
-        }
-        
-        // Extended Hours Toggle
-        function toggleExtendedHours() {
-            extendedHours = !extendedHours;
-            document.getElementById('extended-hours-toggle').classList.toggle('active', extendedHours);
-        }
-        
-        // Order Type Toggle
-        function toggleLimitPrice() {
-            const orderType = document.getElementById('order-type').value;
-            const priceFields = document.getElementById('price-fields');
-            const stopField = document.getElementById('stop-price-field');
-            
-            priceFields.style.display = (orderType !== 'MKT') ? 'grid' : 'none';
-            stopField.style.display = (orderType === 'STP_LMT') ? 'block' : 'none';
-        }
-        
-        // Order Confirmation Modal
-        function showOrderConfirmation(event) {
-            event.preventDefault();
-            
-            const assetType = document.getElementById('asset-type').value;
-            const action = document.getElementById('action').value;
-            const orderType = document.getElementById('order-type').value;
-            
-            let symbol, quantity;
-            if (assetType === 'stock') {
-                symbol = document.getElementById('symbol').value.toUpperCase();
-                quantity = parseInt(document.getElementById('quantity').value);
-            } else {
-                const contract = document.getElementById('futures-contract').value;
-                const expiry = document.getElementById('futures-expiry').value;
-                symbol = contract + expiry;
-                quantity = parseInt(document.getElementById('futures-qty').value);
-            }
-            
-            if (!symbol || !quantity) {
-                showMessage('Please fill in all required fields', 'error');
-                return;
-            }
-            
-            const limitPrice = parseFloat(document.getElementById('limit-price').value) || null;
-            const stopPrice = parseFloat(document.getElementById('stop-price').value) || null;
-            
-            pendingOrder = {
-                asset_type: assetType,
-                symbol: symbol,
-                quantity: quantity,
-                action: action,
-                order_type: orderType,
-                limit_price: limitPrice,
-                stop_price: stopPrice,
-                extended_hours: extendedHours
-            };
-            
-            // Build preview
-            let preview = `
-                <div class="order-preview-row">
-                    <span class="order-preview-label">Symbol</span>
-                    <span class="order-preview-value">${symbol}</span>
-                </div>
-                <div class="order-preview-row">
-                    <span class="order-preview-label">Action</span>
-                    <span class="order-preview-value ${action === 'BUY' ? 'text-green' : 'text-red'}">${action}</span>
-                </div>
-                <div class="order-preview-row">
-                    <span class="order-preview-label">Quantity</span>
-                    <span class="order-preview-value">${quantity}${assetType === 'futures' ? ' contracts' : ' shares'}</span>
-                </div>
-                <div class="order-preview-row">
-                    <span class="order-preview-label">Order Type</span>
-                    <span class="order-preview-value">${orderType}</span>
-                </div>
-            `;
-            
-            if (limitPrice) {
-                preview += `
-                    <div class="order-preview-row">
-                        <span class="order-preview-label">Limit Price</span>
-                        <span class="order-preview-value">${formatCurrency(limitPrice)}</span>
-                    </div>
-                `;
-            }
-            
-            if (extendedHours) {
-                preview += `
-                    <div class="order-preview-row">
-                        <span class="order-preview-label">Extended Hours</span>
-                        <span class="order-preview-value text-yellow">Enabled</span>
-                    </div>
-                `;
-            }
-            
-            document.getElementById('order-preview').innerHTML = preview;
-            
-            // Add warnings
-            let warnings = [];
-            if (orderType === 'MKT') {
-                warnings.push('Market orders execute at current market price');
-            }
-            if (extendedHours) {
-                warnings.push('Extended hours may have lower liquidity and wider spreads');
-            }
-            if (assetType === 'futures') {
-                warnings.push('Futures use leverage - risk management is critical');
-            }
-            
-            document.getElementById('order-warnings').innerHTML = warnings.length 
-                ? '<div class="warning-text">' + warnings.join('<br>') + '</div>'
-                : '';
-            
-            document.getElementById('confirm-modal').classList.add('show');
-        }
-        
+        // Order form removed — stubs for leftover references
+        function showOrderConfirmation(event) { if (event) event.preventDefault(); }
         function closeModal() {
-            document.getElementById('confirm-modal').classList.remove('show');
+            const modal = document.getElementById('confirm-modal');
+            if (modal) modal.classList.remove('show');
             pendingOrder = null;
         }
         
@@ -943,7 +721,7 @@ HTML_TEMPLATE = """
                 
                 const tbody = document.getElementById('positions-table');
                 if (positionsData.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center;">No positions</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" class="text-muted" style="text-align:center;">No positions</td></tr>';
                     return;
                 }
                 
@@ -953,12 +731,14 @@ HTML_TEMPLATE = """
                     const pctPort = ((pos.market_value || 0) / netLiq * 100).toFixed(1);
                     const pctClass = pctPort > 10 ? 'text-yellow' : '';
                     const secType = pos.sec_type || 'STK';
+                    const mktPrice = pos.market_price || 0;
                     
                     return `
                         <tr>
                             <td><strong>${pos.symbol}</strong><span class="text-muted" style="font-size:10px;margin-left:4px;">${secType}</span></td>
                             <td class="${pos.quantity >= 0 ? 'text-green' : 'text-red'}">${pos.quantity}</td>
                             <td>${formatCurrency(pos.avg_cost)}</td>
+                            <td>${formatCurrency(mktPrice)}</td>
                             <td>${formatCurrency(pos.market_value)}</td>
                             <td>${formatPnl(pos.pnl)}</td>
                             <td class="${pctClass}">${pctPort}%</td>
@@ -1002,28 +782,8 @@ HTML_TEMPLATE = """
         }
         
         async function placeOrder() {
-            if (!pendingOrder) return;
-            
-            try {
-                const response = await fetch('/api/order', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(pendingOrder)
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    showMessage(`Order placed: ${pendingOrder.action} ${pendingOrder.quantity} ${pendingOrder.symbol}`, 'success');
-                    document.getElementById('order-form').reset();
-                    closeModal();
-                    fetchOrders();
-                } else {
-                    showMessage(`Order failed: ${data.error}`, 'error');
-                }
-            } catch (e) {
-                showMessage('Failed to place order', 'error');
-            }
+            // Order placement via UI removed — use Discord bot.
+            showMessage('Orders are placed via Discord bot', 'error');
         }
         
         async function cancelOrder(orderId) {
@@ -1153,8 +913,7 @@ HTML_TEMPLATE = """
                             <td class="${changeClass}">${item.last > 0 ? changePrefix + formatCurrency(item.change) : '--'}</td>
                             <td class="${changeClass}">${item.last > 0 ? changePrefix + item.change_pct.toFixed(2) + '%' : '--'}</td>
                             <td>
-                                <button class="btn btn-sm" onclick="quickBuy('${item.symbol}')">Buy</button>
-                                <button class="btn btn-sm text-red" onclick="removeFromWatchlist('${item.symbol}')" style="padding:4px 6px;">✕</button>
+                                <button class="btn btn-sm text-red" onclick="removeFromWatchlist('${item.symbol}')" style="padding:4px 6px;" title="Remove">✕</button>
                             </td>
                         </tr>
                     `;
@@ -1206,26 +965,16 @@ HTML_TEMPLATE = """
         }
         
         function quickBuy(symbol) {
-            // Pre-fill the order form
-            setAssetType('stock');
-            document.getElementById('symbol').value = symbol;
-            document.getElementById('quantity').value = 100;
-            document.getElementById('action').value = 'BUY';
-            document.getElementById('order-type').value = 'MKT';
-            
-            // Scroll to order form
-            document.getElementById('order-form').scrollIntoView({ behavior: 'smooth' });
-            showMessage(`Order form pre-filled for ${symbol}`, 'success');
+            showMessage(`Use Discord: @bot buy ${symbol}`, 'success');
         }
         
         // Setup
-        document.getElementById('confirm-order-btn').addEventListener('click', placeOrder);
-        document.getElementById('futures-contract').addEventListener('change', updateFuturesExpiries);
+        const confirmBtn = document.getElementById('confirm-order-btn');
+        if (confirmBtn) confirmBtn.addEventListener('click', placeOrder);
         
         // Initial load and auto-refresh
         refreshAll();
         fetchWatchlist();
-        updateFuturesExpiries();
         setInterval(refreshAll, 5000);
         setInterval(fetchWatchlist, 30000);  // Refresh watchlist every 30 seconds
     </script>
@@ -1348,56 +1097,42 @@ def api_account():
 
 @app.route('/api/positions')
 def api_positions():
-    """Get current positions with P&L using reqPnLSingle for accurate data."""
+    """Get positions with accurate P&L from portfolio().
+
+    portfolio() returns marketPrice, marketValue, and unrealizedPNL
+    directly — much more reliable than reqPnLSingle.
+    """
     ib = get_ib()
-    
+
     if not ib or not ib.isConnected():
         return jsonify([])
-    
+
     try:
         with _ib_lock:
             track_api_call()
-            ib.reqPositions()
-            ib.sleep(0.3)
-            
             positions = []
-            for pos in ib.positions():
-                if pos.position != 0:
-                    # Get contract details
-                    contract = pos.contract
-                    
-                    # Try to get PnL using reqPnLSingle
-                    pnl = 0
-                    unrealized_pnl = 0
-                    market_price = pos.avgCost  # Fallback
-                    
-                    try:
-                        # Request single position PnL
-                        ib.qualifyContracts(contract)
-                        
-                        # Use portfolio() which includes unrealizedPnL
-                        for pv in ib.portfolio():
-                            if pv.contract.conId == contract.conId:
-                                unrealized_pnl = pv.unrealizedPNL or 0
-                                market_price = pv.marketPrice or pos.avgCost
-                                pnl = unrealized_pnl
-                                break
-                    except Exception as e:
-                        logger.debug(f"Could not get PnL for {contract.symbol}: {e}")
-                    
-                    market_value = abs(pos.position * market_price)
-                    
-                    positions.append({
-                        "symbol": pos.contract.symbol,
-                        "quantity": int(pos.position),
-                        "avg_cost": pos.avgCost,
-                        "market_price": market_price,
-                        "market_value": market_value,
-                        "pnl": pnl,
-                        "sec_type": pos.contract.secType,
-                        "con_id": contract.conId
-                    })
-        
+            for pv in ib.portfolio():
+                if pv.position == 0:
+                    continue
+
+                market_price = pv.marketPrice or 0
+                market_value = pv.marketValue or abs(pv.position * market_price)
+                unrealized_pnl = pv.unrealizedPNL or 0
+
+                # avgCost from portfolio is total cost / qty
+                avg_cost = pv.averageCost or 0
+
+                positions.append({
+                    "symbol": pv.contract.symbol,
+                    "quantity": int(pv.position),
+                    "avg_cost": round(avg_cost, 2),
+                    "market_price": round(market_price, 2),
+                    "market_value": round(abs(market_value), 2),
+                    "pnl": round(unrealized_pnl, 2),
+                    "sec_type": pv.contract.secType or "STK",
+                    "con_id": pv.contract.conId,
+                })
+
         return jsonify(positions)
     except Exception as e:
         logger.error(f"Failed to get positions: {e}")
@@ -1623,66 +1358,99 @@ def api_cancel_all():
 
 @app.route('/api/watchlist')
 def api_watchlist():
-    """Get market data for watchlist symbols."""
+    """Get market data for watchlist symbols.
+
+    Uses reqMktData with delayed data (type 3) which works without
+    paid market data subscriptions.  Falls back to portfolio() for
+    any symbol that is currently held.
+    """
     global _watchlist, _market_data
-    
+
     ib = get_ib()
-    
+
     if not ib or not ib.isConnected():
-        return jsonify({"symbols": _watchlist, "data": {}})
-    
+        return jsonify({"symbols": _watchlist, "data": []})
+
     try:
         from ib_async import Stock
-        
+
+        # Build a lookup of current portfolio prices (always accurate)
+        portfolio_prices = {}
         with _ib_lock:
             track_api_call()
-            
-            result = []
+            for pv in ib.portfolio():
+                portfolio_prices[pv.contract.symbol] = {
+                    "last": pv.marketPrice or 0,
+                    "value": pv.marketValue or 0,
+                    "pnl": pv.unrealizedPNL or 0,
+                }
+
+        result = []
+        with _ib_lock:
+            # Switch to delayed-frozen data so snapshots work on paper
+            try:
+                ib.reqMarketDataType(3)  # 3 = delayed-frozen
+            except Exception:
+                pass
+
             for symbol in _watchlist:
-                contract = Stock(symbol, 'SMART', 'USD')
-                
-                try:
-                    ib.qualifyContracts(contract)
-                    
-                    # Request market data snapshot
-                    ticker = ib.reqMktData(contract, '', True, False)
-                    ib.sleep(0.3)
-                    
-                    last_price = ticker.last or ticker.close or 0
-                    change = 0
-                    change_pct = 0
-                    
-                    if ticker.close and ticker.close > 0:
-                        if ticker.last:
-                            change = ticker.last - ticker.close
-                            change_pct = (change / ticker.close) * 100
-                    
+                # If we already hold this symbol, use portfolio data
+                if symbol in portfolio_prices:
+                    pp = portfolio_prices[symbol]
                     result.append({
                         "symbol": symbol,
-                        "last": last_price,
-                        "bid": ticker.bid or 0,
-                        "ask": ticker.ask or 0,
-                        "change": change,
-                        "change_pct": change_pct,
-                        "volume": ticker.volume or 0
-                    })
-                    
-                    # Cancel market data to avoid rate limits
-                    ib.cancelMktData(contract)
-                    
-                except Exception as e:
-                    logger.debug(f"Could not get data for {symbol}: {e}")
-                    result.append({
-                        "symbol": symbol,
-                        "last": 0,
+                        "last": pp["last"],
                         "bid": 0,
                         "ask": 0,
-                        "change": 0,
+                        "change": pp["pnl"],
                         "change_pct": 0,
                         "volume": 0,
-                        "error": str(e)
+                        "source": "portfolio",
                     })
-        
+                    continue
+
+                contract = Stock(symbol, 'SMART', 'USD')
+                try:
+                    track_api_call()
+                    ib.qualifyContracts(contract)
+
+                    ticker = ib.reqMktData(contract, '', True, False)
+                    ib.sleep(0.5)  # give delayed data a moment
+
+                    last = ticker.last if (ticker.last and ticker.last > 0) else \
+                           ticker.close if (ticker.close and ticker.close > 0) else \
+                           ticker.marketPrice() if hasattr(ticker, 'marketPrice') else 0
+                    bid = ticker.bid if (ticker.bid and ticker.bid > 0) else 0
+                    ask = ticker.ask if (ticker.ask and ticker.ask > 0) else 0
+                    close = ticker.close if (ticker.close and ticker.close > 0) else 0
+                    change = (last - close) if (close > 0 and last > 0) else 0
+                    change_pct = (change / close * 100) if close > 0 else 0
+
+                    result.append({
+                        "symbol": symbol,
+                        "last": last,
+                        "bid": bid,
+                        "ask": ask,
+                        "change": round(change, 2),
+                        "change_pct": round(change_pct, 2),
+                        "volume": ticker.volume or 0,
+                    })
+
+                    ib.cancelMktData(contract)
+                except Exception as e:
+                    logger.debug(f"Watchlist data error for {symbol}: {e}")
+                    result.append({
+                        "symbol": symbol, "last": 0, "bid": 0, "ask": 0,
+                        "change": 0, "change_pct": 0, "volume": 0,
+                        "error": str(e),
+                    })
+
+            # Restore live data type
+            try:
+                ib.reqMarketDataType(1)
+            except Exception:
+                pass
+
         return jsonify({"symbols": _watchlist, "data": result})
     except Exception as e:
         logger.error(f"Failed to get watchlist: {e}")
@@ -1707,10 +1475,647 @@ def api_update_watchlist():
         return jsonify({"success": False, "error": str(e)})
 
 
+# ---------------------------------------------------------------------------
+# API Key authentication for remote trade API
+# ---------------------------------------------------------------------------
+TRADE_API_KEY = os.environ.get("TRADE_API_KEY", "saiyan-trade-2026")
+
+
+def require_api_key(f):
+    """Decorator: require X-API-Key header for remote endpoints."""
+    from functools import wraps
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        key = request.headers.get("X-API-Key", "")
+        if not hmac.compare_digest(key, TRADE_API_KEY):
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+
+    return decorated
+
+
+@app.route('/api/trade', methods=['POST'])
+@require_api_key
+def api_trade():
+    """
+    Remote trade endpoint — supports single AND scaled (multi-entry) orders.
+    
+    Accepts a trade request, computes position size using real account data,
+    places one or more limit orders, and returns the results.
+    
+    === Single entry ===
+    Request:
+        {"ticker":"HOOD", "action":"BUY", "limit_price":25.50, "stop_loss":24.00}
+    
+    === Scaled entries (sent by Discord bot) ===
+    Request:
+        {
+            "ticker": "HOOD",
+            "action": "BUY",
+            "entries": [
+                {"price": 24.50, "pct": 40, "label": "Scout", "stop_loss": 23.00},
+                {"price": 25.50, "pct": 60, "label": "Confirm", "stop_loss": 24.00}
+            ],
+            "source": "discord-bot"
+        }
+    
+    Response (scaled):
+        {
+            "success": true,
+            "orders": [
+                {"order_id": 7, "status": "PreSubmitted", "shares": 15, "price": 24.50, "label": "Scout"},
+                {"order_id": 8, "status": "PreSubmitted", "shares": 24, "price": 25.50, "label": "Confirm"}
+            ],
+            "total_shares": 39,
+            "total_value": 994.50,
+            "account_capital": 100000
+        }
+    """
+    ib = get_ib()
+    if not ib or not ib.isConnected():
+        return jsonify({"success": False, "error": "Not connected to IB Gateway"})
+
+    try:
+        data = request.json
+        ticker = data.get("ticker", "").upper().strip()
+        action = data.get("action", "BUY").upper().strip()
+        source = data.get("source", "api")
+        entries = data.get("entries", None)  # Scaled entries array
+
+        # --- Validation ---
+        if not ticker:
+            return jsonify({"success": False, "error": "Missing ticker"})
+        if action not in ("BUY", "SELL"):
+            return jsonify({"success": False, "error": f"Invalid action: {action}"})
+
+        # --- Get account capital for position sizing ---
+        with _ib_lock:
+            track_api_call()
+            try:
+                ib.cancelAccountSummary()
+            except Exception:
+                pass
+            ib.reqAccountSummary()
+            ib.sleep(0.5)
+
+            summary = {}
+            for item in ib.accountSummary():
+                summary[item.tag] = item.value
+
+            try:
+                ib.cancelAccountSummary()
+            except Exception:
+                pass
+
+        net_liq = float(summary.get("NetLiquidation", 0) or 0)
+        account_capital = max(net_liq, 50000)
+
+        from ib_async import Stock, LimitOrder
+
+        contract = Stock(ticker, 'SMART', 'USD')
+
+        with _ib_lock:
+            track_api_call()
+            ib.qualifyContracts(contract)
+
+        # ---- Sizing overrides from caller ----
+        dollar_amount = float(data.get("dollar_amount", 0))
+        share_count = int(data.get("share_count", 0))
+
+        # ================================================================
+        # SCALED ENTRIES: multiple orders at different prices
+        # ================================================================
+        if entries and isinstance(entries, list) and len(entries) > 1:
+            avg_price = sum(e["price"] for e in entries) / len(entries)
+
+            # Determine total_shares: dollar > explicit > risk-based
+            if dollar_amount > 0:
+                total_shares = max(1, -(-int(dollar_amount / avg_price)))  # ceil
+            elif share_count > 0:
+                total_shares = share_count
+            else:
+                risk_per_trade = 0.02
+                max_position_pct = 0.10
+                widest_stop = min(e.get("stop_loss", avg_price * 0.95) for e in entries)
+                risk_per_share = abs(avg_price - widest_stop) if widest_stop > 0 else avg_price * 0.05
+                total_by_risk = int((account_capital * risk_per_trade) / risk_per_share) if risk_per_share > 0 else 1
+                total_by_max = int((account_capital * max_position_pct) / avg_price) if avg_price > 0 else 1
+                total_shares = max(1, min(total_by_risk, total_by_max))
+
+            # --- Scaled entries: place Order 1 now, queue the rest ---
+            # Order 2+ are CONDITIONAL — only placed after prior fill + price confirm.
+            # A background monitor thread handles the queueing.
+            order_results = []
+            total_value = 0
+            queued_entries = []
+
+            for idx, entry in enumerate(entries):
+                entry_price = float(entry["price"])
+                pct = int(entry.get("pct", round(100 / len(entries))))
+                label = entry.get("label", "")
+                entry_shares = max(1, int(total_shares * pct / 100))
+
+                if entry_price <= 0:
+                    order_results.append({
+                        "success": False, "price": entry_price,
+                        "label": label, "error": "Invalid price",
+                    })
+                    continue
+
+                if idx == 0:
+                    # --- Place first order immediately ---
+                    with _ib_lock:
+                        track_api_call()
+                        order = LimitOrder(action, entry_shares, entry_price)
+                        trade = ib.placeOrder(contract, order)
+                        ib.sleep(0.3)
+
+                    order_results.append({
+                        "success": True,
+                        "order_id": trade.order.orderId,
+                        "status": trade.orderStatus.status,
+                        "shares": entry_shares,
+                        "price": entry_price,
+                        "pct": pct,
+                        "label": label,
+                    })
+                    total_value += entry_shares * entry_price
+                    first_order_id = trade.order.orderId
+
+                    logger.info(
+                        f"[TRADE API] {source}: {action} {entry_shares} {ticker} "
+                        f"@ ${entry_price:.2f} [{label}] → ID={trade.order.orderId}"
+                    )
+                else:
+                    # --- Queue remaining entries as conditional ---
+                    stop_loss = float(entry.get("stop_loss", 0))
+                    queued_entries.append({
+                        "ticker": ticker,
+                        "action": action,
+                        "shares": entry_shares,
+                        "price": entry_price,
+                        "pct": pct,
+                        "label": label,
+                        "stop_loss": stop_loss,
+                        "source": source,
+                    })
+                    order_results.append({
+                        "success": True,
+                        "order_id": "PENDING",
+                        "status": "Conditional",
+                        "shares": entry_shares,
+                        "price": entry_price,
+                        "pct": pct,
+                        "label": f"{label} (waits for entry {idx} fill)",
+                    })
+                    total_value += entry_shares * entry_price
+
+            # Queue conditional entries for the background monitor
+            if queued_entries:
+                first_stop = float(entries[0].get("stop_loss", 0))
+                with _pending_lock:
+                    _pending_entries.append({
+                        "ticker": ticker,
+                        "action": action,
+                        "first_order_id": first_order_id,
+                        "first_stop": first_stop,
+                        "first_price": float(entries[0]["price"]),
+                        "remaining": queued_entries,
+                        "created": time.time(),
+                        "state": "waiting_fill",  # waiting_fill → confirming → done/cancelled
+                    })
+                logger.info(
+                    f"[TRADE API] {len(queued_entries)} conditional entries queued "
+                    f"for {ticker} (waiting for order {first_order_id} fill)"
+                )
+
+            any_success = any(o.get("success") for o in order_results)
+            return jsonify({
+                "success": any_success,
+                "scaled": True,
+                "orders": order_results,
+                "total_shares": sum(o.get("shares", 0) for o in order_results if o.get("success")),
+                "total_value": round(total_value, 2),
+                "account_capital": round(account_capital, 2),
+                "message": f"{action} {ticker} — entry 1 placed, {len(queued_entries)} conditional",
+            })
+
+        # ================================================================
+        # SINGLE ENTRY: original behavior
+        # ================================================================
+        else:
+            limit_price = float(data.get("limit_price", 0))
+            stop_loss = float(data.get("stop_loss", 0))
+
+            # If entries array has exactly 1 entry, use it
+            if entries and len(entries) == 1:
+                limit_price = float(entries[0].get("price", limit_price))
+                stop_loss = float(entries[0].get("stop_loss", stop_loss))
+
+            if limit_price <= 0:
+                return jsonify({"success": False, "error": "Invalid limit_price"})
+
+            # Position sizing: dollar > explicit > risk-based
+            if dollar_amount > 0:
+                import math as _math
+                shares = max(1, _math.ceil(dollar_amount / limit_price))
+            elif share_count > 0:
+                shares = share_count
+            else:
+                risk_per_trade = 0.02
+                max_position_pct = 0.10
+                risk_per_share = abs(limit_price - stop_loss) if stop_loss > 0 else limit_price * 0.05
+                shares_by_risk = int((account_capital * risk_per_trade) / risk_per_share) if risk_per_share > 0 else 1
+                shares_by_max = int((account_capital * max_position_pct) / limit_price) if limit_price > 0 else 1
+                shares = max(1, min(shares_by_risk, shares_by_max))
+
+            with _ib_lock:
+                track_api_call()
+                order = LimitOrder(action, shares, limit_price)
+                trade = ib.placeOrder(contract, order)
+                ib.sleep(0.5)
+
+            order_id = trade.order.orderId
+            status = trade.orderStatus.status
+
+            logger.info(f"[TRADE API] {source}: {action} {shares} {ticker} @ ${limit_price:.2f} → ID={order_id} status={status}")
+
+            return jsonify({
+                "success": True,
+                "scaled": False,
+                "order_id": order_id,
+                "status": status,
+                "shares": shares,
+                "entry_price": limit_price,
+                "position_value": round(shares * limit_price, 2),
+                "account_capital": round(account_capital, 2),
+                "message": f"{action} {shares} {ticker} @ ${limit_price:.2f} LMT",
+            })
+
+    except Exception as e:
+        logger.error(f"[TRADE API] Error: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/trade/status', methods=['GET'])
+@require_api_key
+def api_trade_status():
+    """
+    Get current account status for remote bots.
+    Returns positions, open orders, and account summary.
+    """
+    ib = get_ib()
+    if not ib or not ib.isConnected():
+        return jsonify({"connected": False})
+
+    try:
+        with _ib_lock:
+            track_api_call()
+
+            # Account summary
+            try:
+                ib.cancelAccountSummary()
+            except Exception:
+                pass
+            ib.reqAccountSummary()
+            ib.sleep(0.5)
+            summary = {}
+            for item in ib.accountSummary():
+                summary[item.tag] = item.value
+            try:
+                ib.cancelAccountSummary()
+            except Exception:
+                pass
+
+            # Positions
+            ib.reqPositions()
+            ib.sleep(0.3)
+            positions = []
+            for pos in ib.positions():
+                if pos.position != 0:
+                    positions.append({
+                        "symbol": pos.contract.symbol,
+                        "quantity": int(pos.position),
+                        "avg_cost": pos.avgCost,
+                    })
+
+            # Open orders
+            ib.reqOpenOrders()
+            ib.sleep(0.3)
+            orders = []
+            for trade in ib.openTrades():
+                o = trade.order
+                orders.append({
+                    "order_id": o.orderId,
+                    "symbol": trade.contract.symbol,
+                    "action": o.action,
+                    "quantity": int(o.totalQuantity),
+                    "order_type": o.orderType,
+                    "price": o.lmtPrice if o.orderType == "LMT" else None,
+                    "status": trade.orderStatus.status,
+                })
+
+        return jsonify({
+            "connected": True,
+            "net_liquidation": float(summary.get("NetLiquidation", 0) or 0),
+            "buying_power": float(summary.get("BuyingPower", 0) or 0),
+            "positions": positions,
+            "open_orders": orders,
+        })
+    except Exception as e:
+        logger.error(f"[TRADE STATUS] Error: {e}")
+        return jsonify({"connected": False, "error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Background monitor for conditional scaled entries
+# ---------------------------------------------------------------------------
+
+def _conditional_entry_monitor():
+    """
+    Background thread that monitors pending conditional entries.
+
+    Flow for each pending group:
+      1. WAITING_FILL — poll until the first order fills.
+         If the first order is cancelled or the stock drops below
+         the first entry's stop-loss, cancel the whole group.
+      2. CONFIRMING — after fill, wait for a price "confirmation":
+         price must stay above the first entry price for 60s.
+         This prevents adding to a position that immediately reverses.
+      3. Place the next conditional order and repeat for remaining.
+      4. DONE — all entries placed or group cancelled.
+
+    The monitor runs every 10 seconds.
+    """
+    logger.info("[MONITOR] Conditional entry monitor started")
+
+    while True:
+        time.sleep(10)
+
+        ib = get_ib()
+        if not ib or not ib.isConnected():
+            continue
+
+        with _pending_lock:
+            groups = list(_pending_entries)
+
+        completed = []
+
+        for group in groups:
+            state = group.get("state", "waiting_fill")
+            ticker = group["ticker"]
+            action = group["action"]
+            age_min = (time.time() - group["created"]) / 60
+
+            # --- Timeout: cancel after 24 hours ---
+            if age_min > 24 * 60:
+                logger.warning(f"[MONITOR] {ticker} conditional entries expired (24h)")
+                group["state"] = "cancelled"
+                completed.append(group)
+                continue
+
+            if state == "waiting_fill":
+                # Check if first order has filled
+                first_id = group["first_order_id"]
+                filled = False
+                cancelled = False
+
+                try:
+                    with _ib_lock:
+                        track_api_call()
+                        for trade in ib.trades():
+                            if trade.order.orderId == first_id:
+                                status = trade.orderStatus.status
+                                if status == "Filled":
+                                    filled = True
+                                elif status in ("Cancelled", "ApiCancelled", "Inactive"):
+                                    cancelled = True
+                                break
+                except Exception as e:
+                    logger.debug(f"[MONITOR] Error checking order {first_id}: {e}")
+                    continue
+
+                if cancelled:
+                    logger.info(f"[MONITOR] {ticker} entry 1 cancelled → skipping remaining entries")
+                    group["state"] = "cancelled"
+                    completed.append(group)
+                elif filled:
+                    logger.info(f"[MONITOR] {ticker} entry 1 filled → starting confirmation window")
+                    group["state"] = "confirming"
+                    group["confirm_start"] = time.time()
+
+            elif state == "confirming":
+                # Price confirmation: wait 60s with price above entry
+                confirm_start = group.get("confirm_start", time.time())
+                elapsed = time.time() - confirm_start
+                first_price = group["first_price"]
+                first_stop = group["first_stop"]
+
+                # Get current price
+                try:
+                    from ib_async import Stock as _Stock
+                    contract = _Stock(ticker, 'SMART', 'USD')
+                    with _ib_lock:
+                        track_api_call()
+                        ib.qualifyContracts(contract)
+                        t = ib.reqMktData(contract, '', True, False)
+                        ib.sleep(0.5)
+                        cur_price = t.last or t.close or 0
+                        ib.cancelMktData(contract)
+                except Exception as e:
+                    logger.debug(f"[MONITOR] Price check failed for {ticker}: {e}")
+                    continue
+
+                is_long = (action == "BUY")
+
+                # Check stop hit → cancel
+                if first_stop > 0:
+                    if (is_long and cur_price < first_stop) or (not is_long and cur_price > first_stop):
+                        logger.info(f"[MONITOR] {ticker} hit stop ${first_stop:.2f} → cancelling remaining entries")
+                        group["state"] = "cancelled"
+                        completed.append(group)
+                        continue
+
+                # Check confirmation (price above entry for longs, below for shorts)
+                price_ok = (cur_price >= first_price) if is_long else (cur_price <= first_price)
+
+                if price_ok and elapsed >= 60:
+                    # Confirmed — place next conditional order
+                    remaining = group.get("remaining", [])
+                    if remaining:
+                        next_entry = remaining.pop(0)
+                        try:
+                            from ib_async import Stock as _Stock2, LimitOrder as _LO
+                            contract = _Stock2(next_entry["ticker"], 'SMART', 'USD')
+                            with _ib_lock:
+                                track_api_call()
+                                ib.qualifyContracts(contract)
+                                order = _LO(next_entry["action"], next_entry["shares"], next_entry["price"])
+                                trade = ib.placeOrder(contract, order)
+                                ib.sleep(0.3)
+
+                            logger.info(
+                                f"[MONITOR] Placed conditional: {next_entry['action']} "
+                                f"{next_entry['shares']} {next_entry['ticker']} @ ${next_entry['price']:.2f} "
+                                f"[{next_entry.get('label', '')}] → ID={trade.order.orderId}"
+                            )
+                        except Exception as e:
+                            logger.error(f"[MONITOR] Failed to place conditional order for {ticker}: {e}")
+
+                        if remaining:
+                            # More entries — go back to waiting for this one to fill
+                            group["first_order_id"] = trade.order.orderId
+                            group["first_price"] = next_entry["price"]
+                            group["first_stop"] = next_entry.get("stop_loss", 0)
+                            group["state"] = "waiting_fill"
+                        else:
+                            group["state"] = "done"
+                            completed.append(group)
+                    else:
+                        group["state"] = "done"
+                        completed.append(group)
+                elif not price_ok:
+                    # Price reversed — reset confirmation timer
+                    group["confirm_start"] = time.time()
+
+        # Clean up completed groups
+        if completed:
+            with _pending_lock:
+                for g in completed:
+                    if g in _pending_entries:
+                        _pending_entries.remove(g)
+
+
+@app.route('/api/analyze/<ticker>')
+@require_api_key
+def api_analyze(ticker):
+    """
+    Remote stock analysis endpoint — runs scanner + technical analyzer.
+
+    Returns comprehensive analysis JSON:
+      - Regime classification, volatility, strategy recommendation
+      - Technical indicators (RSI, ATR, EMAs, VPES)
+      - Entry zones, stop loss, targets, EV, R:R
+      - Volume pullback pattern detection
+      - Support/resistance levels
+      - Position sizing (Kelly, vol-adjusted)
+
+    Usage:
+      GET /api/analyze/AAPL  (with X-API-Key header)
+    """
+    ticker = ticker.upper().strip()
+    result = {"ticker": ticker, "success": False}
+
+    # --- 1. Run the unified scanner (regime, strategy, EV, entries) ---
+    try:
+        import importlib
+        import sys as _sys
+
+        # Import scanner dynamically (avoids circular imports)
+        scanner_path = os.path.join(os.path.dirname(__file__), "scanner.py")
+        spec = importlib.util.spec_from_file_location("scanner", scanner_path)
+        scanner_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scanner_mod)
+
+        scan = scanner_mod.scan_stock(ticker)
+        if scan:
+            from dataclasses import asdict as _asdict
+            scan_dict = _asdict(scan)
+            # Remove None/NaN values for clean JSON
+            for k, v in list(scan_dict.items()):
+                if v is None:
+                    scan_dict[k] = None
+                elif isinstance(v, float) and (v != v):  # NaN check
+                    scan_dict[k] = None
+            result["scan"] = scan_dict
+            result["success"] = True
+    except Exception as e:
+        logger.warning(f"Scanner error for {ticker}: {e}")
+        result["scan_error"] = str(e)
+
+    # --- 2. Run technical analyzer (EMAs, RSI, VPES, support/resistance) ---
+    try:
+        analyzer_path = os.path.join(os.path.dirname(__file__), "stock_analyzer.py")
+        spec2 = importlib.util.spec_from_file_location("stock_analyzer", analyzer_path)
+        analyzer_mod = importlib.util.module_from_spec(spec2)
+        spec2.loader.exec_module(analyzer_mod)
+
+        tech = analyzer_mod.analyze_stock(ticker)
+        if tech:
+            info = analyzer_mod.get_stock_info(ticker)
+            earnings = analyzer_mod.get_earnings(ticker)
+            result["technical"] = {
+                "price": round(tech.price, 2),
+                "change_1d": round(tech.change_1d, 2),
+                "change_1w": round(tech.change_1w, 2),
+                "change_1m": round(tech.change_1m, 2),
+                "trend": tech.trend_position.value,
+                "rsi": round(tech.rsi, 2),
+                "atr": round(tech.atr, 2),
+                "atr_pct": round(tech.atr_pct, 2),
+                "volume_ratio": round(tech.volume_ratio, 2),
+                "vpes": round(tech.vpes, 4),
+                "support": round(tech.support_level, 2),
+                "resistance": round(tech.resistance_level, 2),
+                "emas": {
+                    str(e.ema_period): {
+                        "value": round(e.ema_value, 2),
+                        "position": e.position,
+                        "distance_pct": round(e.distance_pct, 2),
+                    }
+                    for e in tech.ema_analysis
+                },
+            }
+            if info:
+                result["info"] = {
+                    "name": info.get("name", ticker),
+                    "sector": info.get("sector", ""),
+                    "industry": info.get("industry", ""),
+                    "market_cap": info.get("market_cap"),
+                    "pe_ratio": info.get("pe_ratio"),
+                    "forward_pe": info.get("forward_pe"),
+                    "52w_high": info.get("52w_high"),
+                    "52w_low": info.get("52w_low"),
+                }
+            if earnings:
+                result["earnings"] = {
+                    "upcoming": earnings.get("upcoming"),
+                    "recent": earnings.get("recent", [])[:2],
+                }
+            result["success"] = True
+    except Exception as e:
+        logger.warning(f"Technical analyzer error for {ticker}: {e}")
+        result["technical_error"] = str(e)
+
+    return jsonify(result)
+
+
+@app.route('/api/pending_entries')
+def api_pending_entries():
+    """Get status of conditional/pending scaled entries."""
+    with _pending_lock:
+        return jsonify([
+            {
+                "ticker": g["ticker"],
+                "action": g["action"],
+                "state": g["state"],
+                "first_order_id": g.get("first_order_id"),
+                "remaining_count": len(g.get("remaining", [])),
+                "age_min": round((time.time() - g["created"]) / 60, 1),
+            }
+            for g in _pending_entries
+        ])
+
+
 def main():
     """Run the trading GUI server."""
     # Connect to IB on startup
     init_ib()
+
+    # Start conditional entry monitor
+    monitor = threading.Thread(target=_conditional_entry_monitor, daemon=True)
+    monitor.start()
     
     port = int(os.getenv("GUI_PORT", "8080"))
     
