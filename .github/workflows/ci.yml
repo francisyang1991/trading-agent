@@ -28,7 +28,7 @@ jobs:
         run: |
           ruff check src/ tests/ tools/ workspace/scripts/ \
             --select E,F,W \
-            --ignore E501,E402,W503 \
+            --ignore E501,E402 \
             --exit-zero
 
   # ── Unit Tests (Tier 1) ────────────────────────────────────────────
@@ -47,7 +47,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install pytest pytest-cov pytest-asyncio pytest-timeout
-          pip install pandas numpy ta yfinance
+          pip install pandas numpy ta yfinance loguru
           pip install pyyaml python-dotenv pydantic
 
       - name: Run Tier 1 unit tests
@@ -81,7 +81,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install pytest pytest-cov pytest-asyncio pytest-timeout
-          pip install pandas numpy ta yfinance scikit-learn
+          pip install pandas numpy ta yfinance scikit-learn loguru requests
           pip install pyyaml python-dotenv pydantic sqlalchemy
 
       - name: Run Tier 2 integration tests
@@ -115,7 +115,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install pytest pytest-cov pytest-asyncio pytest-timeout
-          pip install pandas numpy
+          pip install pandas numpy loguru requests
           pip install pyyaml python-dotenv pydantic
 
       - name: Run Tier 3 bot tests
@@ -150,7 +150,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install pytest pytest-cov pytest-asyncio pytest-timeout
-          pip install pandas numpy ta yfinance scikit-learn
+          pip install pandas numpy ta yfinance scikit-learn loguru requests
           pip install pyyaml python-dotenv pydantic sqlalchemy
 
       - name: Run all tests with coverage
