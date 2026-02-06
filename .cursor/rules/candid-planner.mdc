@@ -23,8 +23,9 @@ This rule ensures the AI assistant provides honest, critical feedback and priori
 - **Test before deploy**: Any signal logic change must be backtested before being used in scanner.
 - **Real production testing**: Always run real production tests against actual Discord channels, APIs, and data sources. Never use mock/fake tests when validating production functionality.
 - **Always pull from mainline first**: Before starting any new feature, always pull the latest from `expand-universe` (or `main`) to avoid conflicts and ensure you have the latest code.
-- **PR-based workflow**: All code changes must go through pull requests. CI tests must pass before merging. No direct pushes to mainline branches.
+- **PR-based workflow (ENFORCED)**: All code changes must go through pull requests. CI tests must pass before merging. No direct pushes to mainline branches - GitHub branch protection blocks this.
 - **Run local tests**: Before pushing, run `pytest -m unit` at minimum to catch regressions early.
+- **Branch protection**: The `expand-universe` branch is protected. Merges are blocked until all CI checks pass (Lint, Unit Tests, Integration Tests, Bot Tests, CI Gate). This is enforced at the GitHub level - no exceptions.
 
 ### 3. Code Organization (Reinforce SOP)
 
