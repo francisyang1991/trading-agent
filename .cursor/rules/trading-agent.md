@@ -86,3 +86,55 @@ gcloud compute ssh trading-vm --zone=us-east1-b
 # Sync to GCloud
 ./scripts/sync_to_gcloud.sh
 ```
+
+---
+
+## CI / Multi-Agent Workflow (persistent)
+
+### Golden Rules
+1. **Always pull from mainline** before starting any new feature:
+   ```bash
+   git checkout expand-universe && git pull origin expand-universe
+   git checkout -b feature/<your-feature>
+   ```
+2. **All changes go through PRs** - never push directly to `main` or `expand-universe`.
+3. **CI must pass** before any PR can be merged.
+4. **Each agent creates its own feature branch** from the latest mainline.
+5. **Run local tests before pushing**:
+   ```bash
+   pytest -m unit       # Tier 1 - fast, pure logic
+   pytest -m integration  # Tier 2 - mocked external deps
+   pytest -m bot        # Tier 3 - Discord mocks
+   ```
+
+### CI Pipeline (GitHub Actions)
+- **Trigger**: On every PR to `main` / `expand-universe`, and on push to those branches.
+- **Jobs**: Lint (ruff) -> Unit Tests -> Integration Tests -> Bot Tests -> Coverage.
+- **Gate**: All jobs must pass before merge is allowed.
+- **Config**: `.github/workflows/ci.yml`
+
+### Test Markers
+| Marker | Description | Speed |
+|--------|------------|-------|
+| `unit` | Pure logic, no external deps | Fast (<1 min) |
+| `integration` | Mocked external deps | Moderate |
+| `bot` | Discord bot utilities (mocked) | Fast |
+| `e2e` | Live connections (manual only) | Slow |
+
+### Test Files
+- `pytest.ini` - Markers, settings, timeouts
+- `tests/test_ev_calculator.py` - EV, Kelly, risk/reward, position sizing
+- `tests/test_regime.py` - Regime classification, momentum
+- `tests/test_risk_manager.py` - Circuit breaker, drawdown, position/portfolio limits
+- `tests/test_sizing.py` - Position sizer (fixed, Kelly, vol-target)
+- `tests/test_signals.py` - Entry engine, strategy matrix
+- `tests/test_llm_analyzer.py` - LLM response parsing, local sentiment analysis
+- `tests/test_data_manager.py` - SQLite cache layer
+- `tests/test_discord_utils.py` - Ticker extraction, message splitting
+
+### Claude Code Discord Agent (@claudecode on AWS)
+- **Agent Script**: workspace/scripts/discord_bot/claude_discord_agent.py (runs on AWS)
+- **Local Helper**: workspace/scripts/discord_bot/claude_code_bot.py (for manual sends from Cursor)
+- **App ID**: 1469202811207290911
+- **Service**: claude-discord.service (systemd on AWS)
+- **How it works**: User @mentions @claudecode on Discord -> piped to `claude -p` CLI -> response sent back
