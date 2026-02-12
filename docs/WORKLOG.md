@@ -23,6 +23,9 @@
 - **Trade History:** Added `/api/executions` endpoint and a "Trade History" table in the dashboard.
 - **Persistent Analysis:** Analysis button now opens a persistent detailed panel with technical indicators (RSI, MACD, ATR) and actionable advice.
 
+### Security Cleanup
+- **Removed hardcoded Discord bot token** from `claude_discord_agent.py` (now requires `DISCORD_BOT_TOKEN_CLAUDE` env var).
+
 ## 2. Verification Status
 - **Unit Tests:** Passed (`tests/unit/legacy/test_basic.py`, `tests/unit/legacy/test_classification.py`).
 - **Pipeline Logic:** Verified order parameter generation and midday review logic via `python -c` script.
