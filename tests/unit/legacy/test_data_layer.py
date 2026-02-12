@@ -13,6 +13,7 @@ from src.data.ibkr_client import IBKRClient
 from src.data.ibkr_web_client import IBKRWebClient, IBeamManager
 from src.data.data_manager import BacktestDataManager
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 
 
