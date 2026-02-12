@@ -1,0 +1,32 @@
+---
+description: Ensure continuity by reading previous work logs and instructions
+globs: *
+---
+# Worklog & Continuity Rule
+
+To maintain project momentum and avoid regression, every agent MUST follow this protocol at the start and end of their session.
+
+## 1. Start of Session: Read the Worklog
+
+Before executing any task, you MUST read `docs/WORKLOG.md` to understand:
+- The current state of the system (Recent updates to Schedulers, GUI, Pattern Library).
+- The most recent changes made by the previous agent.
+- The **"Next Steps for Next Agent"** section, which contains critical pending tasks or validation steps.
+
+**Command to run immediately:**
+`read_file docs/WORKLOG.md`
+
+## 2. End of Session: Update the Worklog
+
+Before finishing your turn, you MUST update `docs/WORKLOG.md` with:
+- A summary of your changes (files modified, features added, bugs fixed).
+- Validation results (tests passed, manual verification steps).
+- **Clear instructions for the next agent** in the "Next Steps" section.
+
+## 3. Critical Context
+
+- **Schedulers:** The system now runs on **PST** (Pacific Standard Time). Morning pipeline at 7:00 AM PST, Midday Review at 12:00 PM PST, Learning at 2:45 PM PST.
+- **Data Source:** We prioritize **IBKR** `reqPnL` for accurate daily P&L.
+- **Pattern Learning:** Use `pattern_library.py` and `backtest_patterns.py` for signal validation.
+
+FAILURE TO READ THE WORKLOG MAY RESULT IN DUPLICATE WORK OR BROKEN FEATURES.
