@@ -1,0 +1,35 @@
+[Unit]
+Description=Claude Code Discord Agent (@claudecode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trading-agent/workspace/scripts/discord_bot
+
+# Load all env vars from .env
+EnvironmentFile=/home/ubuntu/trading-agent/workspace/.env
+
+ExecStart=/home/ubuntu/trading-agent/venv/bin/python -u claude_discord_agent.py
+
+# Auto-restart on crash — wait 20s between restarts
+Restart=on-failure
+RestartSec=20
+
+# Force kill after 30s (prevents hung Claude CLI processes)
+TimeoutStopSec=30
+KillMode=control-group
+KillSignal=SIGTERM
+
+# Log to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claude-agent
+
+# Restart rate limiting: max 5 restarts in 10 minutes
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

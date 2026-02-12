@@ -543,7 +543,7 @@ def analyze_image_with_llm(image_bytes: bytes, ticker: str, context: str,
     """
     Send a chart image to MiniMax (Anthropic-compatible) for visual analysis.
 
-    MiniMax M2.1 supports vision via the Anthropic messages API format.
+    MiniMax M2.5 supports vision via the Anthropic messages API format.
     """
     try:
         import anthropic
@@ -556,7 +556,7 @@ def analyze_image_with_llm(image_bytes: bytes, ticker: str, context: str,
         b64_image = base64.b64encode(image_bytes).decode('utf-8')
 
         message = client.messages.create(
-            model="MiniMax-M2.1",
+            model="MiniMax-M2.5",
             max_tokens=1200,
             messages=[{
                 "role": "user",
