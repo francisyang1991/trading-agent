@@ -41,11 +41,56 @@ _connect_time = None
 _message_count = 0
 _last_rate_reset = time.time()
 _daily_start_equity = None
+_daily_pnl_data = {"daily": 0.0, "unrealized": 0.0, "realized": 0.0}  # From reqPnL
 _pnl_subscriptions = {}  # Track PnL subscriptions for positions
 _watchlist = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"]  # Default watchlist
 _market_data = {}  # Cache for market data
 _pending_entries = []  # Conditional entries waiting for prior fill + confirmation
 _pending_lock = threading.Lock()
+
+
+def _subscribe_pnl(ib):
+    """Subscribe to account-level PnL for accurate daily P&L from IBKR."""
+    global _daily_pnl_data
+    try:
+        # Get account ID first
+        ib.reqAccountSummary()
+        ib.sleep(0.5)
+        acct_id = ""
+        for item in ib.accountSummary():
+            if item.account:
+                acct_id = item.account
+                break
+        try:
+            ib.cancelAccountSummary()
+        except Exception:
+            pass
+
+        if acct_id:
+            pnl = ib.reqPnL(acct_id)
+            ib.sleep(0.5)
+
+            def _on_pnl_update(pnl_obj):
+                global _daily_pnl_data
+                _daily_pnl_data = {
+                    "daily": float(pnl_obj.dailyPnL or 0),
+                    "unrealized": float(pnl_obj.unrealizedPnL or 0),
+                    "realized": float(pnl_obj.realizedPnL or 0),
+                }
+
+            ib.pnlEvent += _on_pnl_update
+            # Capture initial values
+            if pnl and pnl.dailyPnL is not None:
+                _daily_pnl_data = {
+                    "daily": float(pnl.dailyPnL or 0),
+                    "unrealized": float(pnl.unrealizedPnL or 0),
+                    "realized": float(pnl.realizedPnL or 0),
+                }
+            logger.info(f"Subscribed to PnL for account {acct_id}: daily={_daily_pnl_data['daily']:.2f}")
+        else:
+            logger.warning("Could not determine account ID for PnL subscription")
+    except Exception as e:
+        logger.warning(f"PnL subscription failed (will use fallback): {e}")
 
 
 def init_ib():
@@ -67,6 +112,10 @@ def init_ib():
         _ib.connect(host, port, clientId=client_id)
         _connect_time = datetime.now()
         logger.info(f"Connected to IB Gateway at {host}:{port}")
+
+        # Subscribe to account-level PnL for accurate daily P&L
+        _subscribe_pnl(_ib)
+
         return True
         
     except Exception as e:
@@ -530,27 +579,60 @@ HTML_TEMPLATE = """
                 </table>
             </div>
             
+            <!-- Analysis Panel (persistent results) -->
+            <div class="card" id="analysis-card" style="display:none;">
+                <h2>Analysis Results
+                    <button class="btn btn-sm" onclick="document.getElementById('analysis-card').style.display='none'" style="float:right;padding:2px 8px;font-size:11px;">✕ Close</button>
+                </h2>
+                <div id="analysis-content" style="font-size:13px;line-height:1.6;"></div>
+            </div>
+            
+            <!-- Trade History -->
+            <div class="card">
+                <h2>Trade History
+                    <span id="trades-status" style="font-size:11px;color:#6e7681;margin-left:8px;"></span>
+                    <button class="btn btn-sm refresh-btn" onclick="fetchExecutions()" style="float:right;">Refresh</button>
+                </h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="text-align:left;">Time</th>
+                            <th>Symbol</th>
+                            <th>Side</th>
+                            <th style="text-align:right;">Qty</th>
+                            <th style="text-align:right;">Price</th>
+                            <th style="text-align:right;">Value</th>
+                            <th style="text-align:right;">P&amp;L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="executions-table">
+                        <tr><td colspan="7" class="text-muted" style="text-align:center;">No trades today</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            
             <!-- Market Watchlist -->
             <div class="card">
                 <h2>Market Watch
+                    <span id="watchlist-status" style="font-size:11px;color:#6e7681;margin-left:8px;"></span>
                     <button class="btn btn-sm refresh-btn" onclick="fetchWatchlist()" style="float:right;">Refresh</button>
                 </h2>
-                <div style="margin-bottom: 12px;">
+                <div style="margin-bottom: 12px; display:flex; gap:6px;">
                     <input type="text" id="watchlist-input" placeholder="Add symbol (e.g. AAPL)" 
-                           style="width: calc(100% - 80px); display: inline-block;"
+                           style="flex:1;"
                            onkeypress="if(event.key==='Enter'){addToWatchlist();}">
-                    <button class="btn btn-sm primary" onclick="addToWatchlist()" style="width: 70px;">Add</button>
+                    <button class="btn btn-sm primary" onclick="addToWatchlist()" style="min-width: 60px;">Add</button>
                 </div>
                 <table>
                     <thead>
                         <tr>
-                            <th>Symbol</th>
-                            <th>Last</th>
-                            <th>Bid</th>
-                            <th>Ask</th>
-                            <th>Change</th>
-                            <th>%</th>
-                            <th></th>
+                            <th style="text-align:left;">Symbol</th>
+                            <th style="text-align:right;">Last</th>
+                            <th style="text-align:right;">Change</th>
+                            <th style="text-align:right;">%</th>
+                            <th style="text-align:right;">Bid</th>
+                            <th style="text-align:right;">Ask</th>
+                            <th style="text-align:center;width:70px;">Action</th>
                         </tr>
                     </thead>
                     <tbody id="watchlist-table">
@@ -727,28 +809,41 @@ HTML_TEMPLATE = """
                 
                 const netLiq = accountData.net_liquidation || 1;
                 
+                let totalPnl = 0;
                 tbody.innerHTML = positionsData.map(pos => {
                     const pctPort = ((pos.market_value || 0) / netLiq * 100).toFixed(1);
                     const pctClass = pctPort > 10 ? 'text-yellow' : '';
                     const secType = pos.sec_type || 'STK';
                     const mktPrice = pos.market_price || 0;
+                    const pnl = pos.pnl || 0;
+                    totalPnl += pnl;
+                    const pnlPct = pos.avg_cost > 0 && mktPrice > 0 ? ((mktPrice / pos.avg_cost - 1) * 100).toFixed(1) : '0.0';
+                    const pnlClass = pnl >= 0 ? 'text-green' : 'text-red';
                     
                     return `
                         <tr>
                             <td><strong>${pos.symbol}</strong><span class="text-muted" style="font-size:10px;margin-left:4px;">${secType}</span></td>
                             <td class="${pos.quantity >= 0 ? 'text-green' : 'text-red'}">${pos.quantity}</td>
                             <td>${formatCurrency(pos.avg_cost)}</td>
-                            <td>${formatCurrency(mktPrice)}</td>
+                            <td><strong>${mktPrice > 0 ? formatCurrency(mktPrice) : '--'}</strong></td>
                             <td>${formatCurrency(pos.market_value)}</td>
-                            <td>${formatPnl(pos.pnl)}</td>
+                            <td class="${pnlClass}">${formatPnl(pnl)} <span style="font-size:10px;">(${pnlPct}%)</span></td>
                             <td class="${pctClass}">${pctPort}%</td>
                             <td class="position-actions">
+                                <button class="btn btn-sm" onclick="analyzeSymbol('${pos.symbol}')" title="Analyze">📊</button>
                                 <button class="btn btn-sm" onclick="closePosition('${pos.symbol}', ${pos.quantity}, 0.5, '${secType}')">50%</button>
                                 <button class="btn btn-sm danger" onclick="closePosition('${pos.symbol}', ${pos.quantity}, 1, '${secType}')">Close</button>
                             </td>
                         </tr>
                     `;
                 }).join('');
+                // Add total row
+                const totalClass = totalPnl >= 0 ? 'text-green' : 'text-red';
+                tbody.innerHTML += `<tr style="border-top:2px solid #30363d;font-weight:bold;">
+                    <td colspan="5" style="text-align:right;">Total P&L:</td>
+                    <td class="${totalClass}">${formatPnl(totalPnl)}</td>
+                    <td colspan="2"></td>
+                </tr>`;
             } catch (e) {
                 console.error('Failed to fetch positions:', e);
             }
@@ -882,6 +977,7 @@ HTML_TEMPLATE = """
             fetchAccount();
             fetchPositions();
             fetchOrders();
+            fetchExecutions();
         }
         
         // Watchlist functions
@@ -900,20 +996,25 @@ HTML_TEMPLATE = """
                     return;
                 }
                 
+                const now = new Date().toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+                document.getElementById('watchlist-status').textContent = `Updated ${now}`;
+                
                 tbody.innerHTML = data.data.map(item => {
                     const changeClass = item.change >= 0 ? 'text-green' : 'text-red';
                     const changePrefix = item.change >= 0 ? '+' : '';
+                    const spreadPct = item.bid > 0 && item.ask > 0 ? ((item.ask - item.bid) / item.last * 100).toFixed(2) : '';
                     
                     return `
                         <tr>
-                            <td><strong>${item.symbol}</strong></td>
-                            <td>${item.last > 0 ? formatCurrency(item.last) : '--'}</td>
-                            <td class="text-muted">${item.bid > 0 ? formatCurrency(item.bid) : '--'}</td>
-                            <td class="text-muted">${item.ask > 0 ? formatCurrency(item.ask) : '--'}</td>
-                            <td class="${changeClass}">${item.last > 0 ? changePrefix + formatCurrency(item.change) : '--'}</td>
-                            <td class="${changeClass}">${item.last > 0 ? changePrefix + item.change_pct.toFixed(2) + '%' : '--'}</td>
-                            <td>
-                                <button class="btn btn-sm text-red" onclick="removeFromWatchlist('${item.symbol}')" style="padding:4px 6px;" title="Remove">✕</button>
+                            <td style="text-align:left;"><strong>${item.symbol}</strong></td>
+                            <td style="text-align:right;font-variant-numeric:tabular-nums;">${item.last > 0 ? formatCurrency(item.last) : '--'}</td>
+                            <td style="text-align:right;" class="${changeClass}">${item.last > 0 ? changePrefix + formatCurrency(item.change) : '--'}</td>
+                            <td style="text-align:right;" class="${changeClass}">${item.last > 0 ? changePrefix + item.change_pct.toFixed(2) + '%' : '--'}</td>
+                            <td style="text-align:right;" class="text-muted">${item.bid > 0 ? formatCurrency(item.bid) : '--'}</td>
+                            <td style="text-align:right;" class="text-muted">${item.ask > 0 ? formatCurrency(item.ask) : '--'}</td>
+                            <td style="text-align:center;">
+                                <button class="btn btn-sm" onclick="analyzeSymbol('${item.symbol}')" style="padding:2px 8px;font-size:11px;" title="Analyze">📊</button>
+                                <button class="btn btn-sm text-red" onclick="removeFromWatchlist('${item.symbol}')" style="padding:2px 6px;font-size:11px;" title="Remove">✕</button>
                             </td>
                         </tr>
                     `;
@@ -964,8 +1065,123 @@ HTML_TEMPLATE = """
             }
         }
         
-        function quickBuy(symbol) {
-            showMessage(`Use Discord: @bot buy ${symbol}`, 'success');
+        async function fetchExecutions() {
+            try {
+                const response = await fetch('/api/executions');
+                const data = await response.json();
+                const tbody = document.getElementById('executions-table');
+                
+                if (!data || data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center;">No trades today</td></tr>';
+                    document.getElementById('trades-status').textContent = '';
+                    return;
+                }
+                
+                document.getElementById('trades-status').textContent = `${data.length} fill(s)`;
+                
+                tbody.innerHTML = data.map(ex => {
+                    const sideClass = ex.action === 'BOT' ? 'text-green' : 'text-red';
+                    const sideLabel = ex.action === 'BOT' ? 'BUY' : 'SELL';
+                    const pnlHtml = ex.realized_pnl !== 0 
+                        ? `<span class="${ex.realized_pnl >= 0 ? 'text-green' : 'text-red'}">${ex.realized_pnl >= 0 ? '+' : ''}${formatCurrency(ex.realized_pnl)}</span>`
+                        : '<span class="text-muted">--</span>';
+                    const timeStr = ex.time ? ex.time.split(' ')[1] || ex.time : '--';
+                    return `
+                        <tr>
+                            <td style="text-align:left;font-size:12px;">${timeStr}</td>
+                            <td><strong>${ex.symbol}</strong></td>
+                            <td class="${sideClass}">${sideLabel}</td>
+                            <td style="text-align:right;">${ex.quantity}</td>
+                            <td style="text-align:right;">${formatCurrency(ex.price)}</td>
+                            <td style="text-align:right;">${formatCurrency(ex.value)}</td>
+                            <td style="text-align:right;">${pnlHtml}</td>
+                        </tr>
+                    `;
+                }).join('');
+            } catch (e) {
+                console.error('Failed to fetch executions:', e);
+            }
+        }
+        
+        async function analyzeSymbol(symbol) {
+            showMessage(`Analyzing ${symbol}...`, 'success');
+            
+            // Show analysis card with loading state
+            const card = document.getElementById('analysis-card');
+            const content = document.getElementById('analysis-content');
+            card.style.display = 'block';
+            content.innerHTML = `<div class="text-muted" style="text-align:center;padding:20px;">Analyzing <strong>${symbol}</strong>...</div>`;
+            
+            // Scroll to analysis card
+            card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            
+            try {
+                const response = await fetch(`/api/analyze/${symbol}`, {
+                    headers: { 'X-API-Key': 'saiyan-trade-2026' }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    const scan = data.scan || {};
+                    const tech = data.technical || {};
+                    const action = scan.action || 'N/A';
+                    const regime = scan.regime || 'N/A';
+                    const rsi = tech.rsi ? tech.rsi.toFixed(1) : 'N/A';
+                    const buyLow = scan.buy_zone_low ? scan.buy_zone_low.toFixed(2) : 'N/A';
+                    const buyHigh = scan.buy_zone_high ? scan.buy_zone_high.toFixed(2) : 'N/A';
+                    const stop = scan.stop_loss ? scan.stop_loss.toFixed(2) : 'N/A';
+                    const target1 = scan.target_1 ? scan.target_1.toFixed(2) : 'N/A';
+                    const target2 = scan.target_2 ? scan.target_2.toFixed(2) : 'N/A';
+                    const posPct = scan.position_size_pct ? (scan.position_size_pct * 100).toFixed(0) + '%' : 'N/A';
+                    const ema21 = tech.ema_21 ? tech.ema_21.toFixed(2) : 'N/A';
+                    const ema50 = tech.ema_50 ? tech.ema_50.toFixed(2) : 'N/A';
+                    const macd = tech.macd ? tech.macd.toFixed(2) : 'N/A';
+                    const atr = tech.atr ? tech.atr.toFixed(2) : 'N/A';
+                    const price = tech.price ? tech.price.toFixed(2) : 'N/A';
+                    
+                    const actionColor = action.includes('BUY') ? '#3fb950' : action.includes('SELL') ? '#f85149' : '#d29922';
+                    const regimeColor = regime === 'Bullish' ? '#3fb950' : regime === 'Bearish' ? '#f85149' : '#d29922';
+                    
+                    content.innerHTML = `
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                            <div>
+                                <h3 style="margin:0 0 8px;font-size:16px;">
+                                    ${symbol} 
+                                    <span style="color:${actionColor};font-size:14px;padding:2px 8px;border:1px solid ${actionColor};border-radius:4px;margin-left:6px;">${action}</span>
+                                </h3>
+                                <div style="margin-bottom:12px;">
+                                    <span class="text-muted">Price:</span> <strong>$${price}</strong> &nbsp;
+                                    <span class="text-muted">Regime:</span> <span style="color:${regimeColor};">${regime}</span>
+                                </div>
+                                <table style="font-size:12px;width:100%;">
+                                    <tr><td class="text-muted" style="padding:3px 8px 3px 0;">Buy Zone</td><td style="text-align:right;">$${buyLow} — $${buyHigh}</td></tr>
+                                    <tr><td class="text-muted" style="padding:3px 8px 3px 0;">Stop Loss</td><td style="text-align:right;color:#f85149;">$${stop}</td></tr>
+                                    <tr><td class="text-muted" style="padding:3px 8px 3px 0;">Target 1</td><td style="text-align:right;color:#3fb950;">$${target1}</td></tr>
+                                    <tr><td class="text-muted" style="padding:3px 8px 3px 0;">Target 2</td><td style="text-align:right;color:#3fb950;">$${target2}</td></tr>
+                                    <tr><td class="text-muted" style="padding:3px 8px 3px 0;">Position Size</td><td style="text-align:right;">${posPct}</td></tr>
+                                </table>
+                            </div>
+                            <div>
+                                <h3 style="margin:0 0 8px;font-size:14px;color:#8b949e;">Technical Indicators</h3>
+                                <table style="font-size:12px;width:100%;">
+                                    <tr><td class="text-muted" style="padding:3px 8px 3px 0;">RSI (14)</td><td style="text-align:right;color:${parseFloat(rsi) > 70 ? '#f85149' : parseFloat(rsi) < 30 ? '#3fb950' : '#e6edf3'};">${rsi}</td></tr>
+                                    <tr><td class="text-muted" style="padding:3px 8px 3px 0;">EMA 21</td><td style="text-align:right;">$${ema21}</td></tr>
+                                    <tr><td class="text-muted" style="padding:3px 8px 3px 0;">EMA 50</td><td style="text-align:right;">$${ema50}</td></tr>
+                                    <tr><td class="text-muted" style="padding:3px 8px 3px 0;">MACD</td><td style="text-align:right;">${macd}</td></tr>
+                                    <tr><td class="text-muted" style="padding:3px 8px 3px 0;">ATR</td><td style="text-align:right;">$${atr}</td></tr>
+                                </table>
+                            </div>
+                        </div>
+                    `;
+                    showMessage(`${symbol}: ${action} | Regime: ${regime}`, action.includes('BUY') ? 'success' : 'info');
+                } else {
+                    content.innerHTML = `<div class="text-muted" style="text-align:center;padding:20px;">${symbol}: No analysis data available</div>`;
+                    showMessage(`${symbol}: No analysis available`, 'error');
+                }
+            } catch (e) {
+                content.innerHTML = `<div style="text-align:center;padding:20px;color:#f85149;">Failed to analyze ${symbol}</div>`;
+                showMessage(`Failed to analyze ${symbol}`, 'error');
+            }
         }
         
         // Setup
@@ -976,7 +1192,7 @@ HTML_TEMPLATE = """
         refreshAll();
         fetchWatchlist();
         setInterval(refreshAll, 5000);
-        setInterval(fetchWatchlist, 30000);  // Refresh watchlist every 30 seconds
+        setInterval(fetchWatchlist, 10000);  // Refresh watchlist every 10 seconds
     </script>
 </body>
 </html>
@@ -1065,18 +1281,22 @@ def api_account():
                     position_count += 1
                     total_unrealized_pnl += pv.unrealizedPNL or 0
             
-            # Get realized P&L from account summary
-            realized_pnl = float(summary.get("RealizedPnL", 0) or 0)
-            
-            # Day P&L = Realized P&L (closed trades) + Unrealized P&L change today
-            # For a more accurate day P&L, use both values
-            # Note: IBKR's RealizedPnL resets daily, UnrealizedPnL is current
-            day_pnl = realized_pnl + total_unrealized_pnl
-            
-            # Store start equity if not set (for percentage calculation)
+            # Use reqPnL subscription data for accurate daily P&L from IBKR
+            # This is the IBKR-computed daily change, not our approximation
+            day_pnl = _daily_pnl_data.get("daily", 0.0)
+            realized_pnl = _daily_pnl_data.get("realized", 0.0)
+
+            # Fallback if PnL subscription hasn't fired yet
+            if day_pnl == 0 and total_unrealized_pnl != 0:
+                fallback_realized = float(summary.get("RealizedPnL", 0) or 0)
+                day_pnl = fallback_realized + total_unrealized_pnl
+                realized_pnl = fallback_realized
+
             net_liq = float(summary.get("NetLiquidation", 0) or 0)
+
+            # Store start equity if not set (for percentage calculation)
             if _daily_start_equity is None:
-                _daily_start_equity = net_liq - day_pnl
+                _daily_start_equity = net_liq - day_pnl if day_pnl != 0 else net_liq
         
         return jsonify({
             "connected": True,
@@ -1137,6 +1357,124 @@ def api_positions():
     except Exception as e:
         logger.error(f"Failed to get positions: {e}")
         return jsonify([])
+
+
+@app.route('/api/executions')
+def api_executions():
+    """Get today's trade executions (fills) from IBKR.
+
+    Returns a list of completed fills with time, symbol, action, quantity, price, etc.
+    This provides the trade history for the GUI dashboard.
+    """
+    ib = get_ib()
+    if not ib or not ib.isConnected():
+        return jsonify([])
+
+    try:
+        with _ib_lock:
+            track_api_call()
+            fills_list = ib.fills()
+
+        executions = []
+        for fill in fills_list:
+            contract = fill.contract
+            execution = fill.execution
+            commission_report = fill.commissionReport
+
+            executions.append({
+                "time": execution.time.strftime("%Y-%m-%d %H:%M:%S") if hasattr(execution.time, 'strftime') else str(execution.time),
+                "symbol": contract.symbol,
+                "action": execution.side,  # BOT or SLD
+                "quantity": int(execution.shares),
+                "price": round(float(execution.price), 2),
+                "value": round(float(execution.shares * execution.price), 2),
+                "commission": round(float(commission_report.commission), 2) if commission_report and commission_report.commission else 0,
+                "realized_pnl": round(float(commission_report.realizedPNL), 2) if commission_report and commission_report.realizedPNL else 0,
+                "order_id": execution.orderId,
+                "exec_id": execution.execId,
+            })
+
+        # Sort by time descending (most recent first)
+        executions.sort(key=lambda x: x["time"], reverse=True)
+        return jsonify(executions)
+
+    except Exception as e:
+        logger.error(f"Failed to get executions: {e}")
+        return jsonify([])
+
+
+@app.route('/api/quotes', methods=['GET', 'POST'])
+def api_quotes():
+    """Batch fetch current prices from IBKR for multiple tickers.
+
+    GET:  /api/quotes?symbols=AAPL,NVDA,AMZN
+    POST: {"symbols": ["AAPL", "NVDA", "AMZN"]}
+
+    Returns: {"AAPL": 185.50, "NVDA": 190.61, ...}
+    Uses reqMktData (delayed-frozen type 3) — works without paid subscriptions.
+    Falls back to portfolio prices for held positions.
+    """
+    # Inline API key check (TRADE_API_KEY & decorator defined later in file)
+    key = request.headers.get("X-API-Key", "")
+    expected = os.environ.get("TRADE_API_KEY", "saiyan-trade-2026")
+    if not hmac.compare_digest(key, expected):
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+
+    ib = get_ib()
+    if not ib or not ib.isConnected():
+        return jsonify({"error": "Not connected"})
+
+    # Parse symbols from GET or POST
+    if request.method == 'POST':
+        data = request.json or {}
+        symbols = data.get('symbols', [])
+    else:
+        symbols = request.args.get('symbols', '').split(',')
+
+    symbols = [s.strip().upper() for s in symbols if s.strip()][:30]  # Max 30
+    if not symbols:
+        return jsonify({"error": "No symbols provided"})
+
+    from ib_async import Stock
+
+    result = {}
+    try:
+        with _ib_lock:
+            track_api_call()
+
+            # First check portfolio for held positions (instant, no API call)
+            for pv in ib.portfolio():
+                sym = pv.contract.symbol
+                if sym in symbols and pv.marketPrice and pv.marketPrice > 0:
+                    result[sym] = round(float(pv.marketPrice), 2)
+
+            # Fetch remaining via reqHistoricalData (works 24/7, no subscription needed)
+            remaining = [s for s in symbols if s not in result]
+
+            for sym in remaining:
+                try:
+                    c = Stock(sym, 'SMART', 'USD')
+                    ib.qualifyContracts(c)
+                    bars = ib.reqHistoricalData(
+                        c,
+                        endDateTime='',
+                        durationStr='2 D',
+                        barSizeSetting='1 day',
+                        whatToShow='TRADES',
+                        useRTH=True,
+                        formatDate=1,
+                    )
+                    if bars:
+                        result[sym] = round(float(bars[-1].close), 2)
+                except Exception as e:
+                    logger.debug(f"Historical price for {sym}: {e}")
+                ib.sleep(0.1)  # Pace requests
+
+    except Exception as e:
+        logger.error(f"Batch quotes error: {e}")
+        return jsonify({"error": str(e), "partial": result})
+
+    return jsonify(result)
 
 
 @app.route('/api/orders')
