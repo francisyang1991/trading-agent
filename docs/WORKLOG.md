@@ -30,6 +30,7 @@
 - **Unit Tests:** Passed (`tests/unit/legacy/test_basic.py`, `tests/unit/legacy/test_classification.py`).
 - **Pipeline Logic:** Verified order parameter generation and midday review logic via `python -c` script.
 - **Timezone Logic:** Confirmed PST calculations are correct.
+- **CI Fix:** Guarded `ibkr_client` type hints when `ib_async` is missing (prevents `Contract` NameError).
 
 ## 3. Next Steps for Next Agent
 1. **Monitor Deployment:** Ensure the new schedulers run correctly on the server (check logs for "Morning pipeline triggered", etc.).

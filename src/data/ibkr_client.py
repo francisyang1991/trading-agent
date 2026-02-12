@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 IBKR API Client Wrapper using ib_async
 Handles connection management, data requests, and order execution.
@@ -18,6 +20,10 @@ except ImportError:
     logger.warning("ib_async not installed. Install with: pip install ib_async")
     IB_ASYNC_AVAILABLE = False
     IB = None
+    # Provide safe fallbacks so type hints don't raise at import time
+    Stock = Contract = Order = Trade = BarData = None
+    MarketOrder = LimitOrder = StopOrder = None
+    df = None
 
 
 class IBKRClient:
