@@ -36,6 +36,12 @@ rich>=13.7.0
 # Web Framework
 flask>=3.0.0
 
+# Discord Bot
+discord.py>=2.3.0
+
+# LLM APIs
+anthropic>=0.40.0
+
 # News API (optional)
 newsapi-python>=0.2.7
 feedparser>=6.0.10

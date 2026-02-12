@@ -17,7 +17,7 @@ from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 
 # MiniMax Configuration
-MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "sk-cp-G8bxUw5-mlh3IrH9KR3HoYv1Y7FErDgFPjT33eOkeJIxWQDTbuw08m0zkIIV4KWnP6Q9NbHycVDKa9bZN2G5wJcQ2-Lh1uy_d78J3mkfeZyBNjkC8gODvII")
+MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "sk-cp-htdF5-oZpUcqnZNM0T1qBmC6ZPp3iD3XsV6Mf7fjmKmdSDZy3AqWvBVTsQz3BSwZb-CSzpg6nnxvtntLReoCvHBOwQb2yNFH-rUVxI0ade1zDrLCcqMgPF0")
 MINIMAX_ENDPOINT = "https://api.minimax.io/v1/text/chatcompletion_v2"
 
 # Anthropic-compatible endpoint
