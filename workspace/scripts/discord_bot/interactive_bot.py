@@ -47,6 +47,8 @@ import trade_executor
 import signal_pipeline
 import signal_tracker
 import pattern_library
+import auto_executor
+import portfolio_manager
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -556,12 +558,14 @@ async def on_ready():
     asyncio.create_task(_scrape_recent_signals())
     # Start periodic signal refresh (every 30 min during market hours)
     asyncio.create_task(_periodic_signal_refresh())
-    # Start morning pipeline scheduler (7:00 AM PST)
-    asyncio.create_task(_morning_pipeline_scheduler())
+    # Start nightly pipeline scheduler
+    asyncio.create_task(_nightly_pipeline_scheduler())
     # Start daily learning cycle (after market close, before pipeline)
     asyncio.create_task(_daily_learning_scheduler())
-    # Start midday portfolio review (12:00 PM ET on weekdays)
-    asyncio.create_task(_midday_review_scheduler())
+    # Start auto-execution scheduler (9:35 AM ET)
+    asyncio.create_task(_auto_execute_scheduler())
+    # Start mid-day portfolio check (12:00 PM ET)
+    asyncio.create_task(_midday_check_scheduler())
 
 
 async def _check_server():
@@ -711,168 +715,117 @@ async def _periodic_signal_refresh():
 DIGEST_CHANNEL_ID = 1345123472019423284
 
 
-async def _send_scheduler_status(msg: str):
-    """Send scheduler progress messages to the Discord digest channel."""
-    try:
-        channel = bot.get_channel(DIGEST_CHANNEL_ID)
-        if channel:
-            await _safe_send(channel, msg)
-    except Exception as e:
-        log.debug(f"Failed to send status: {e}")
-
-
-async def _morning_pipeline_scheduler():
+async def _nightly_pipeline_scheduler():
     """
-    Morning pre-market pipeline at ~7:00 AM PST (15:00 UTC).
-
-    Reviews yesterday's pipeline candidates, combines with current market
-    structure (pre-market data), and auto-trades the best opportunities
-    so orders are queued before market open at 6:30 AM PST.
+    Run full pipeline nightly after market close (~5:15 PM ET / 22:15 UTC).
+    Sends digest to the Rich or Die channel automatically.
     """
     await asyncio.sleep(120)  # Wait 2 min after startup
 
     while True:
         try:
             now = datetime.now(timezone.utc)
-            pst_hour = (now.hour - 8) % 24
-            pst_minute = now.minute
+            et_hour = (now.hour - 5) % 24
+            et_minute = now.minute
             is_weekday = now.weekday() < 5
 
-            # Trigger at 7:00 AM PST (15:00 UTC) on weekdays
-            if is_weekday and pst_hour == 7 and 0 <= pst_minute <= 2:
-                log.info("Morning pipeline triggered (7:00 AM PST)")
-                await _send_scheduler_status(
-                    "🌅 **Morning Pipeline** — 7:00 AM PST\n"
-                    "Reviewing yesterday's candidates + current market structure..."
-                )
+            # Trigger at ~5:15 PM ET (22:15 UTC) on weekdays
+            if is_weekday and et_hour == 17 and 14 <= et_minute <= 16:
+                log.info("Nightly pipeline triggered")
                 await _run_and_send_pipeline()
                 await asyncio.sleep(3600)  # Don't trigger again for 1 hour
             else:
                 await asyncio.sleep(60)  # Check every minute
         except Exception as e:
-            log.warning(f"Morning pipeline error: {e}")
-            await _send_scheduler_status(f"❌ Morning pipeline error: {str(e)[:200]}")
+            log.warning(f"Nightly pipeline error: {e}")
             await asyncio.sleep(600)
+
+
+async def _auto_execute_scheduler():
+    """
+    Run auto-execution of approved trades at market open (~9:35 AM ET / 14:35 UTC).
+    """
+    await asyncio.sleep(130)
+
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            et_hour = (now.hour - 5) % 24
+            et_minute = now.minute
+            is_weekday = now.weekday() < 5
+
+            # Trigger at ~9:35 AM ET (14:35 UTC)
+            if is_weekday and et_hour == 9 and 34 <= et_minute <= 36:
+                log.info("Auto-execution triggered")
+                channel = bot.get_channel(DIGEST_CHANNEL_ID)
+                if channel:
+                    await auto_executor.execute_approved_trades(channel.send)
+                else:
+                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
+                await asyncio.sleep(3600)
+            else:
+                await asyncio.sleep(60)
+        except Exception as e:
+            log.exception(f"Auto-execute scheduler error: {e}")
+            await asyncio.sleep(60)
+
+
+async def _midday_check_scheduler():
+    """
+    Run portfolio check at noon (~12:00 PM ET / 17:00 UTC).
+    """
+    await asyncio.sleep(140)
+
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            et_hour = (now.hour - 5) % 24
+            et_minute = now.minute
+            is_weekday = now.weekday() < 5
+
+            # Trigger at ~12:00 PM ET (17:00 UTC)
+            if is_weekday and et_hour == 12 and 0 <= et_minute <= 2:
+                log.info("Mid-day portfolio check triggered")
+                channel = bot.get_channel(DIGEST_CHANNEL_ID)
+                if channel:
+                    await portfolio_manager.run_midday_check(channel.send)
+                else:
+                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
+                await asyncio.sleep(3600)
+            else:
+                await asyncio.sleep(60)
+        except Exception as e:
+            log.exception(f"Mid-day check scheduler error: {e}")
+            await asyncio.sleep(60)
 
 
 async def _daily_learning_scheduler():
     """
-    Run learning cycle daily at ~2:45 PM PST (22:45 UTC).
+    Run learning cycle daily at ~4:45 PM ET (before nightly pipeline at 5:15 PM).
     Tracks signal outcomes, grades traders, processes chart images.
-    Runs after midday review and before next-day pipeline prep.
     """
     await asyncio.sleep(180)  # Wait 3 min after startup
 
     while True:
         try:
             now = datetime.now(timezone.utc)
-            pst_hour = (now.hour - 8) % 24
-            pst_minute = now.minute
+            et_hour = (now.hour - 5) % 24
+            et_minute = now.minute
             is_weekday = now.weekday() < 5
 
-            # Trigger at ~2:45 PM PST (22:45 UTC) on weekdays
-            if is_weekday and pst_hour == 14 and 44 <= pst_minute <= 46:
-                log.info("Daily learning cycle triggered (2:45 PM PST)")
-                await _send_scheduler_status(
-                    "🧠 **Learning Cycle** — 2:45 PM PST\n"
-                    "Tracking signal outcomes, grading traders..."
-                )
+            # Trigger at ~4:45 PM ET on weekdays (before pipeline at 5:15 PM)
+            if is_weekday and et_hour == 16 and 44 <= et_minute <= 46:
+                log.info("Daily learning cycle triggered")
                 minimax_key = os.environ.get("MINIMAX_API_KEY", "")
                 summary = await signal_tracker.run_daily_learning_cycle(
                     DATA_FILE, api_key=minimax_key
                 )
                 log.info(f"Learning cycle complete:\n{summary}")
-                # Send summary to Discord
-                if summary:
-                    short = summary[:1800] if len(summary) > 1800 else summary
-                    await _send_scheduler_status(f"✅ Learning complete:\n```\n{short}\n```")
                 await asyncio.sleep(3600)  # Don't run again for 1 hour
             else:
                 await asyncio.sleep(60)
         except Exception as e:
             log.warning(f"Learning cycle error: {e}")
-            await _send_scheduler_status(f"❌ Learning cycle error: {str(e)[:200]}")
-            await asyncio.sleep(600)
-
-
-async def _midday_review_scheduler():
-    """
-    Run midday portfolio review at ~12:00 PM PST (20:00 UTC) on weekdays.
-    Checks positions, auto-executes take-profit and cut-loss orders.
-    """
-    await asyncio.sleep(30)  # Startup delay
-    while True:
-        try:
-            now = datetime.now(timezone.utc)
-            pst_hour = (now.hour - 8) % 24
-            pst_minute = now.minute
-            is_weekday = now.weekday() < 5
-
-            # Trigger at 12:00 PM PST (20:00 UTC) on weekdays
-            if is_weekday and pst_hour == 12 and 0 <= pst_minute <= 2:
-                log.info("Midday portfolio review triggered (12:00 PM PST)")
-                await _send_scheduler_status(
-                    "🕐 **Midday Review** — 12:00 PM PST\n"
-                    "Checking positions for take-profit / cut-loss..."
-                )
-
-                channel = bot.get_channel(DIGEST_CHANNEL_ID)
-
-                # Fetch positions from GCloud
-                positions = await trade_executor.call_api("/api/positions")
-                if not positions or not isinstance(positions, list):
-                    log.info("No positions to review at midday")
-                    await asyncio.sleep(3600)
-                    continue
-
-                # Load current candidates for context
-                candidates = signal_pipeline.load_candidates()
-
-                # Generate review and orders
-                orders, summary = signal_pipeline.generate_midday_review(positions, candidates)
-
-                # Send summary to Discord
-                if channel:
-                    await _safe_send(channel, summary)
-
-                # Execute orders (paper mode only)
-                if orders:
-                    try:
-                        health = await trade_executor.call_api("/api/health")
-                        if health.get("trading_mode") == "paper":
-                            for order in orders:
-                                try:
-                                    result = await trade_executor.call_api(
-                                        "/api/trade", method="POST", payload=order
-                                    )
-                                    status = "✅" if result.get("success") else "⚠️"
-                                    src = order.get("source", "midday")
-                                    if channel:
-                                        await _safe_send(
-                                            channel,
-                                            f"{status} [{src}] {order['action']} "
-                                            f"${order['ticker']} x{order.get('share_count', '?')} "
-                                            f"@ ${order['limit_price']}"
-                                        )
-                                    await asyncio.sleep(1)
-                                except Exception as e:
-                                    log.warning(f"Midday order {order['ticker']} failed: {e}")
-                        else:
-                            if channel:
-                                await _safe_send(
-                                    channel,
-                                    f"🔒 Live mode — {len(orders)} action(s) suggested above. "
-                                    f"Use `!approve` to execute."
-                                )
-                    except Exception as e:
-                        log.warning(f"Midday order execution error: {e}")
-
-                log.info(f"Midday review done: {len(orders)} orders")
-                await asyncio.sleep(3600)  # Don't run again for 1 hour
-            else:
-                await asyncio.sleep(60)
-        except Exception as e:
-            log.warning(f"Midday review error: {e}")
             await asyncio.sleep(600)
 
 
@@ -904,38 +857,21 @@ async def _run_and_send_pipeline(channel=None):
             await _safe_send(channel, msg)
             await asyncio.sleep(1)
 
-        # Auto-trade in paper mode: top BUY candidates with score >= 6
+        # Auto-trade in paper mode (nightly pipeline)
         try:
             health = await trade_executor.call_api("/api/health")
             if health.get("trading_mode") == "paper":
-                # Filter: only BUY, grade A/B patterns preferred, score >= 6
-                buy_candidates = [
-                    c for c in candidates
-                    if c.action == "BUY" and c.conviction_score >= 6
-                ][:3]
-                if buy_candidates:
-                    await _safe_send(channel, f"📋 Auto-queuing {len(buy_candidates)} orders for next market open...")
+                buy_candidates = [c for c in candidates if c.action == "BUY"][:3]
                 for c in buy_candidates:
                     try:
                         params = signal_pipeline.generate_order_params(c, "limit")
-                        if params.get("limit_price", 0) <= 0:
-                            log.warning(f"Skipping {c.ticker}: no valid price")
-                            continue
                         result = await trade_executor.call_api("/api/trade", method="POST", payload=params)
                         status = "✅" if result.get("success") else "⚠️"
-                        await _safe_send(
-                            channel,
-                            f"{status} Order: {params['action']} ${c.ticker} "
-                            f"LMT @ ${params['limit_price']} "
-                            f"(score {c.conviction_score:.1f}, "
-                            f"stop ${params.get('stop_loss', 0):.2f})"
-                        )
+                        await _safe_send(channel, f"{status} Auto-trade: ${c.ticker} {params['order_type']} @ ${params.get('price', 'MKT')}")
                         signal_pipeline.save_approved(c.ticker, params)
                         await asyncio.sleep(1)
                     except Exception as e:
                         log.warning(f"Auto-trade {c.ticker} failed: {e}")
-                if not buy_candidates:
-                    await _safe_send(channel, "📝 No candidates scored >= 6 for auto-trade.")
         except Exception as e:
             log.warning(f"Auto-trade check failed: {e}")
 
@@ -1076,7 +1012,33 @@ def _collect_recent_messages(days=7):
         for msg in msgs:
             content = msg.get('content', '')
             ts = msg.get('timestamp', '')
+            # Extract tickers: $TICKER format
             tickers_found = re.findall(r'\$([A-Z]{1,5})\b', content)
+            # Also extract from "Long: FCEL TER HWM" / "Short: AAPL TSLA" patterns
+            direction_match = re.findall(
+                r'(?:Long|Short|Buy|Sell|Bought|Sold|Adding|Added|Watching)[:\s]+([A-Z]{2,5}(?:\s+[A-Z]{2,5})*)',
+                content,
+            )
+            if direction_match:
+                for group in direction_match:
+                    for t in group.split():
+                        t = t.strip()
+                        if 2 <= len(t) <= 5 and t.isalpha() and t.isupper():
+                            if t not in tickers_found:
+                                tickers_found.append(t)
+            # Also catch standalone uppercase tickers near trading keywords
+            if not tickers_found:
+                # Fallback: look for uppercase words near trading context
+                words = re.findall(r'\b([A-Z]{2,5})\b', content)
+                exclude = {
+                    'THE', 'AND', 'FOR', 'ARE', 'BUT', 'NOT', 'YOU', 'ALL', 'CAN',
+                    'HAS', 'HIS', 'HOW', 'ITS', 'MAY', 'NEW', 'NOW', 'OLD', 'SEE',
+                    'WAY', 'WHO', 'BOT', 'GET', 'LET', 'PUT', 'SAY', 'USE', 'YES',
+                    'BUY', 'SELL', 'HOLD', 'LONG', 'SHORT', 'DCA', 'USD', 'IMO',
+                    'FWIW', 'ATH', 'ATL', 'EMA', 'RSI', 'MACD', 'SMA', 'GDP',
+                    'CPI', 'IPO', 'CEO', 'CFO', 'ETF', 'OTM', 'ITM', 'ATM',
+                }
+                tickers_found = [w for w in words if w not in exclude][:5]
             if not tickers_found:
                 continue
             try:
@@ -1401,53 +1363,79 @@ async def cmd_pipeline(ctx):
         await _safe_send(ctx, f"❌ Pipeline error: {str(e)[:200]}")
 
 
-@bot.command(name="approve")
-async def cmd_approve(ctx, ticker: str = None, order_type: str = "limit"):
-    """Approve a pipeline candidate and queue a trade order."""
-    if not ticker:
-        return await _safe_send(ctx, "Usage: `!approve TICKER` or `!approve TICKER market`")
+@bot.command(name="midday")
+async def cmd_midday(ctx):
+    """Run mid-day portfolio review manually."""
+    await _safe_send(ctx, "☀️ Running mid-day portfolio review...")
+    try:
+        await portfolio_manager.run_midday_check(ctx.send)
+    except Exception as e:
+        log.exception(f"Mid-day command error: {e}")
+        await _safe_send(ctx, f"❌ Check failed: {str(e)}")
 
-    ticker = ticker.upper().replace("$", "")
-    order_type = order_type.lower()
+
+@bot.command(name="approve")
+async def cmd_approve(ctx, *args):
+    """Approve pipeline candidate(s) and queue trade orders.
+
+    Supports single or multiple tickers:
+      !approve PBR
+      !approve PBR HOOD NVDA
+      !approve PBR market       (last arg = order type if 'market' or 'limit')
+    """
+    if not args:
+        return await _safe_send(ctx, "Usage: `!approve TICKER [TICKER2 ...]` or `!approve TICKER market`")
+
+    # Parse args: last arg might be order_type
+    args_list = list(args)
+    order_type = "limit"
+    if args_list[-1].lower() in ("market", "limit", "mkt", "lmt"):
+        order_type = "market" if args_list[-1].lower() in ("market", "mkt") else "limit"
+        args_list = args_list[:-1]
+
+    if not args_list:
+        return await _safe_send(ctx, "Usage: `!approve TICKER [TICKER2 ...]`")
+
+    tickers = [t.upper().replace("$", "") for t in args_list]
 
     # Load saved candidates
     candidates = signal_pipeline.load_candidates()
     if not candidates:
-        return await _safe_send(ctx, "❌ No pipeline candidates found. Run `!pipeline` first.")
+        return await _safe_send(ctx, "\u274c No pipeline candidates found. Run `!pipeline` first.")
 
-    # Find the candidate
-    match = next((c for c in candidates if c.ticker == ticker), None)
-    if not match:
-        available = ", ".join(c.ticker for c in candidates[:10])
-        return await _safe_send(ctx, f"❌ {ticker} not in candidates. Available: {available}")
+    results = []
+    for ticker in tickers:
+        match = next((c for c in candidates if c.ticker == ticker), None)
+        if not match:
+            available = ", ".join(c.ticker for c in candidates[:10])
+            results.append(f"\u274c {ticker} not in candidates. Available: {available}")
+            continue
 
-    # Generate order params
-    params = signal_pipeline.generate_order_params(match, order_type)
-    signal_pipeline.save_approved(ticker, params)
+        params = signal_pipeline.generate_order_params(match, order_type)
+        signal_pipeline.save_approved(ticker, params)
 
-    # Send order to GCloud trading API
-    try:
-        result = await trade_executor.call_api("/api/trade", method="POST", payload=params)
-        if result.get("success"):
-            fill_info = result.get("message", "Order placed")
-            await _safe_send(
-                ctx,
-                f"✅ *Order placed for ${ticker}*\n"
-                f"   Type: {params['order_type']} {'@ $' + str(params.get('price', '')) if params.get('price') else ''}\n"
-                f"   Stop: ${params.get('stop_loss', 'N/A')}\n"
-                f"   Target: ${params.get('take_profit', 'N/A')}\n"
-                f"   Size: {params.get('position_size_pct', 0) * 100:.1f}% of portfolio\n"
-                f"   {fill_info}"
-            )
-        else:
-            error = result.get("error", "Unknown error")
-            await _safe_send(ctx, f"⚠️ Order for {ticker} saved but API returned: {error}")
-    except Exception as e:
-        await _safe_send(
-            ctx,
-            f"⚠️ Order for ${ticker} saved locally but API call failed: {str(e)[:100]}\n"
-            f"   Params: {params['order_type']} ${params.get('price', 'MKT')} | Stop ${params.get('stop_loss')}"
-        )
+        try:
+            result = await trade_executor.call_api("/api/trade", method="POST", payload=params)
+            if result.get("success"):
+                fill_info = result.get("message", "Order placed")
+                lp = params.get("limit_price", 0)
+                sl = params.get("stop_loss", 0)
+                tgt = params.get("target", 0)
+                results.append(
+                    f"\u2705 *${ticker}* \u2014 {params.get('order_type', 'LMT')} "
+                    f"@ ${lp:.2f} | Stop ${sl:.2f} | Target ${tgt:.2f} \u2014 {fill_info}"
+                )
+            else:
+                error = result.get("error", "Unknown error")
+                results.append(f"\u26a0\ufe0f ${ticker}: API returned: {error}")
+        except Exception as e:
+            results.append(f"\u26a0\ufe0f ${ticker}: saved locally, API failed: {str(e)[:80]}")
+
+        await asyncio.sleep(1)  # Rate limit between orders
+
+    count = len(tickers)
+    header = f"\U0001f4cb *Approve Results* ({count} ticker{'s' if count > 1 else ''}):\n\n"
+    await _safe_send(ctx, header + "\n".join(results))
 
 
 @bot.command(name="portfolio")
@@ -1466,41 +1454,6 @@ async def cmd_portfolio(ctx):
     # Generate suggestions
     suggestions = signal_pipeline.format_portfolio_suggestions(positions, candidates)
     await _safe_send(ctx, suggestions)
-
-
-@bot.command(name="review")
-async def cmd_review(ctx):
-    """Manually trigger midday portfolio review — take profit / cut loss."""
-    await _safe_send(ctx, "🕐 Running portfolio review...")
-    try:
-        positions = await trade_executor.call_api("/api/positions")
-        if not positions or not isinstance(positions, list):
-            return await _safe_send(ctx, "📭 No open positions to review.")
-
-        candidates = signal_pipeline.load_candidates()
-        orders, summary = signal_pipeline.generate_midday_review(positions, candidates)
-        await _safe_send(ctx, summary)
-
-        if orders:
-            health = await trade_executor.call_api("/api/health")
-            if health.get("trading_mode") == "paper":
-                for order in orders:
-                    try:
-                        result = await trade_executor.call_api("/api/trade", method="POST", payload=order)
-                        status = "✅" if result.get("success") else "⚠️"
-                        await _safe_send(
-                            ctx,
-                            f"{status} [{order.get('source', 'review')}] {order['action']} "
-                            f"${order['ticker']} x{order.get('share_count', '?')} "
-                            f"@ ${order['limit_price']}"
-                        )
-                        await asyncio.sleep(1)
-                    except Exception as e:
-                        await _safe_send(ctx, f"⚠️ Order failed for {order['ticker']}: {e}")
-            else:
-                await _safe_send(ctx, f"🔒 Live mode — {len(orders)} orders above need manual approval.")
-    except Exception as e:
-        await _safe_send(ctx, f"❌ Review error: {str(e)[:200]}")
 
 
 @bot.command(name="patterns")
@@ -1573,18 +1526,18 @@ async def cmd_help(ctx):
 HELP_TEXT = (
     "**Trading Bot Commands**\n\n"
     "📊 **Analysis:**\n"
-    "• `@bot $AAPL` — Analyze ticker (+ pattern match)\n"
+    "• `@bot $AAPL` — Analyze ticker\n"
     "• `!analyze NVDA` — Deep analysis\n"
     "• `!daily [N]` — Analyze last N days signals (default 3)\n\n"
     "📡 **Pipeline & Auto-Trading:**\n"
-    "• `!pipeline` — Full pipeline (signals + scanner → auto-trade in paper)\n"
-    "• `!review` — Midday portfolio review (take profit / cut loss)\n"
+    "• `!pipeline` — Full pipeline (signals + scanner + auto-trade in paper)\n"
     "• `!approve TICKER` — Approve & place limit order\n"
+    "• `!midday` — Run mid-day portfolio review\n"
     "• `!portfolio` — Position management suggestions\n\n"
     "🧠 **Self-Learning:**\n"
     "• `!learn` — Track outcomes + grade traders + analyze patterns\n"
     "• `!grades` — Trader performance report\n"
-    "• `!patterns` — Pattern scorecard (EV, profit factor, grade)\n\n"
+    "• `!patterns` — Pattern win rates (C&H, flag, breakout, etc.)\n\n"
     "🛒 **Manual Trading:**\n"
     "• `@bot buy HOOD` — Buy at EMA21\n"
     "• `@bot buy HOOD 2x` — 2 scaled entries\n"
@@ -1592,10 +1545,7 @@ HELP_TEXT = (
     "📋 **Info:**\n"
     "• `!positions` — Positions with P&L\n"
     "• `!orders` — Open orders\n"
-    "\n*Auto Schedule (PST):*\n"
-    "• 7:00 AM — Pipeline → review + auto-trade for market open\n"
-    "• 12:00 PM — Midday review (take profit / cut loss)\n"
-    "• 2:45 PM — Learning cycle (track outcomes)"
+    "\n*Auto: Learning 4:45 PM | Pipeline 5:15 PM ET*"
 )
 
 

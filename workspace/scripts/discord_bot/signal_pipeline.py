@@ -526,43 +526,31 @@ def generate_order_params(candidate: SignalCandidate, order_type: str = "limit")
     Generate trade API parameters from a candidate.
 
     Returns dict ready to POST to /api/trade.
-    Uses `ticker` and `limit_price` fields that the GCloud API expects.
     """
-    # Determine entry price: buy zone midpoint > scanner price > current price
-    if candidate.scanner_buy_low and candidate.scanner_buy_high:
-        entry_price = (candidate.scanner_buy_low + candidate.scanner_buy_high) / 2
-    elif candidate.current_price > 0:
-        entry_price = candidate.current_price
-    else:
-        entry_price = 0
-
-    stop_price = candidate.scanner_stop or (entry_price * 0.97) if entry_price > 0 else 0
-    target_price = candidate.scanner_target_1 or (entry_price * 1.06) if entry_price > 0 else 0
-    action = "BUY" if candidate.action in ("BUY", "WAIT") else "SELL"
-
-    if order_type == "market" or entry_price <= 0:
-        # Use current price with small buffer for market-like limit order
-        ibkr_prices = get_ibkr_quotes([candidate.ticker])
-        mkt_price = ibkr_prices.get(candidate.ticker, entry_price)
-        if mkt_price > 0:
-            # Limit slightly above market for BUY fills
-            limit = round(mkt_price * 1.003, 2) if action == "BUY" else round(mkt_price * 0.997, 2)
-        else:
-            limit = round(entry_price, 2) if entry_price > 0 else 0
+    if order_type == "market":
         return {
             "ticker": candidate.ticker,
-            "action": action,
-            "limit_price": limit,
-            "stop_loss": round(stop_price, 2),
+            "action": candidate.action if candidate.action in ("BUY", "SELL") else "BUY",
+            "limit_price": 0,
+            "order_type": "MKT",
             "source": "pipeline-auto",
+            "position_size_pct": candidate.scanner_position_pct or 0.02,
         }
+
+    # Limit order at buy zone midpoint
+    entry_price = (candidate.scanner_buy_low + candidate.scanner_buy_high) / 2 if candidate.scanner_buy_low else candidate.current_price
+    stop_price = candidate.scanner_stop or (entry_price * 0.97)
+    target_price = candidate.scanner_target_1 or (entry_price * 1.06)
 
     return {
         "ticker": candidate.ticker,
-        "action": action,
+        "action": candidate.action if candidate.action in ("BUY", "SELL") else "BUY",
+        "order_type": "LMT",
         "limit_price": round(entry_price, 2),
         "stop_loss": round(stop_price, 2),
+        "target": round(target_price, 2),
         "source": "pipeline-auto",
+        "position_size_pct": candidate.scanner_position_pct or 0.02,
     }
 
 
@@ -714,122 +702,6 @@ def format_portfolio_suggestions(positions: List[Dict], candidates: List[SignalC
             )
 
     return "\n".join(lines)
-
-
-def generate_midday_review(positions: List[Dict], candidates: List[SignalCandidate]) -> Tuple[List[Dict], str]:
-    """
-    Midday portfolio review — generates actionable orders for:
-    - Take profit: positions up >12% → trim 50%
-    - Cut loss: positions down >8% → exit full
-    - Raise stop: positions up >5% → tighten stop to breakeven + 1%
-
-    Args:
-        positions: list of position dicts from /api/positions
-        candidates: current pipeline candidates for context
-
-    Returns:
-        (orders_to_execute, summary_message)
-        orders_to_execute: list of dicts ready for /api/trade
-    """
-    if not positions:
-        return [], "📭 No positions to review."
-
-    orders = []
-    lines = [f"🕐 *Midday Review* — {datetime.now().strftime('%b %d %I:%M %p ET')}\n"]
-    candidate_map = {c.ticker: c for c in candidates}
-
-    for pos in positions:
-        symbol = pos.get('symbol', '')
-        qty = int(pos.get('quantity', 0))
-        avg_cost = float(pos.get('avg_cost', 0))
-        mkt_price = float(pos.get('market_price', 0))
-        pnl = float(pos.get('pnl', 0))
-
-        if avg_cost <= 0 or mkt_price <= 0 or qty == 0:
-            continue
-
-        pnl_pct = (mkt_price / avg_cost - 1) * 100
-        is_long = qty > 0
-
-        # ---- TAKE PROFIT: up >12% → trim 50% ----
-        if is_long and pnl_pct >= 12:
-            trim_qty = max(1, abs(qty) // 2)
-            limit = round(mkt_price * 0.998, 2)  # Sell slightly below market
-            orders.append({
-                "ticker": symbol,
-                "action": "SELL",
-                "limit_price": limit,
-                "share_count": trim_qty,
-                "source": "midday-take-profit",
-            })
-            lines.append(
-                f"💰 *{symbol}*: +{pnl_pct:.1f}% → TRIM {trim_qty} shares @ ${limit}"
-            )
-
-        # ---- CUT LOSS: down >8% → exit full ----
-        elif is_long and pnl_pct <= -8:
-            limit = round(mkt_price * 0.997, 2)
-            orders.append({
-                "ticker": symbol,
-                "action": "SELL",
-                "limit_price": limit,
-                "share_count": abs(qty),
-                "source": "midday-cut-loss",
-            })
-            lines.append(
-                f"🚨 *{symbol}*: {pnl_pct:.1f}% → EXIT {abs(qty)} shares @ ${limit}"
-            )
-
-        # ---- TIGHTEN: up 5-12%, still in pipeline as BUY → hold but note ----
-        elif is_long and pnl_pct >= 5:
-            cand = candidate_map.get(symbol)
-            if cand and cand.action == "BUY":
-                lines.append(
-                    f"📈 *{symbol}*: +{pnl_pct:.1f}% — signals still bullish. Hold, stop → ${avg_cost * 1.01:.2f}"
-                )
-            else:
-                lines.append(
-                    f"📈 *{symbol}*: +{pnl_pct:.1f}% — no fresh signal. Watch closely."
-                )
-
-        # ---- LOSING but not cutoff: down 3-8% ----
-        elif is_long and pnl_pct <= -3:
-            cand = candidate_map.get(symbol)
-            if cand and cand.action == "BUY" and cand.conviction_score >= 6:
-                lines.append(
-                    f"⚠️ *{symbol}*: {pnl_pct:.1f}% — pipeline still likes it (score {cand.conviction_score:.1f}). Hold."
-                )
-            else:
-                lines.append(
-                    f"⚠️ *{symbol}*: {pnl_pct:.1f}% — weak signal. Consider reducing."
-                )
-
-        # ---- SHORT positions: mirror logic ----
-        elif not is_long and pnl_pct <= -12:  # Short P&L is inverted
-            trim_qty = max(1, abs(qty) // 2)
-            limit = round(mkt_price * 1.002, 2)
-            orders.append({
-                "ticker": symbol,
-                "action": "BUY",
-                "limit_price": limit,
-                "share_count": trim_qty,
-                "source": "midday-take-profit-short",
-            })
-            lines.append(
-                f"💰 *{symbol}* (SHORT): {pnl_pct:.1f}% → COVER {trim_qty} @ ${limit}"
-            )
-
-        else:
-            lines.append(
-                f"📊 *{symbol}*: {pnl_pct:+.1f}% — hold, no action needed."
-            )
-
-    if orders:
-        lines.append(f"\n⚡ *{len(orders)} order(s) will be auto-executed.*")
-    else:
-        lines.append(f"\n✅ No actions needed. All positions within range.")
-
-    return orders, "\n".join(lines)
 
 
 # ===================================================================

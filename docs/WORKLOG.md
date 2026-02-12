@@ -32,11 +32,32 @@
 - **Timezone Logic:** Confirmed PST calculations are correct.
 - **CI Fix:** Guarded `ibkr_client` type hints when `ib_async` is missing (prevents `Contract` NameError).
 
+## Feb 12, 2026 — Production Hotfixes (tested on AWS)
+
+### Bugs Fixed (directly on AWS, verified live)
+1. **`auto_executor.py` missing `import sys`** — Crashed `interactive_bot.py` on startup. Bot was in systemd restart loop.
+2. **`~/.claude/settings.json` stale API key** — Claude agent was failing silently. Updated key + model to MiniMax-M2.5.
+3. **`generate_order_params()` wrong field names** — Used `"symbol"` (should be `"ticker"`), `"price"` (should be `"limit_price"`). `!approve` always returned "Missing ticker."
+4. **`!approve` only supported single ticker** — Now supports `!approve PBR HOOD NVDA` (multiple tickers).
+5. **Signal extraction missed "Long: FCEL TER HWM TSM"** — `_collect_recent_messages()` only matched `$TICKER` format. Added direction-pattern matching and standalone ticker fallback.
+6. **MiniMax model updated M2.1 → M2.5** — All references across 5 files + AWS `settings.json`.
+
+### New Files
+- `docs/DEBUG_LESSONS.md` — Production debugging lessons + deployment checklist.
+- `scripts/services/interactive-bot.service` — Systemd service for trading bot.
+- `scripts/services/claude-agent.service` — Systemd service for Claude agent.
+- `scripts/bot_health_monitor.sh` — Health check script with Discord alerts.
+- `scripts/deploy_bots_aws.sh` — One-command deploy for AWS.
+
+### Key Lesson
+**Always test on AWS, not just locally.** The AWS version of files can diverge from local. See `docs/DEBUG_LESSONS.md` for full checklist.
+
 ## 3. Next Steps for Next Agent
 1. **Monitor Deployment:** Ensure the new schedulers run correctly on the server (check logs for "Morning pipeline triggered", etc.).
 2. **Validate Live Trading:** Confirm that `reqPnL` updates correctly during market hours.
 3. **Expand Pattern Library:** Add more patterns (e.g., Bull Flag, Double Bottom) to `pattern_library.py` and backtest them.
 4. **Refine Midday Logic:** Consider adding trailing stops or more nuanced exit rules based on market regime.
+5. **Read `docs/DEBUG_LESSONS.md`** before any production deployment.
 
 ## 4. Key Files
 - `workspace/scripts/discord_bot/interactive_bot.py`: Main bot logic & schedulers.

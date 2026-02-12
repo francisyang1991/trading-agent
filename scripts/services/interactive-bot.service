@@ -1,0 +1,35 @@
+[Unit]
+Description=Interactive Discord Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/trading-agent/workspace/scripts/discord_bot
+
+# Load all env vars from .env
+EnvironmentFile=/home/ubuntu/trading-agent/workspace/.env
+
+ExecStart=/home/ubuntu/trading-agent/venv/bin/python -u interactive_bot.py
+
+# Auto-restart on crash — wait 15s between restarts
+Restart=on-failure
+RestartSec=15
+
+# Kill cleanly, then force after 30s
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+# Log to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=interactive-bot
+
+# Restart rate limiting: max 5 restarts in 5 minutes
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target
