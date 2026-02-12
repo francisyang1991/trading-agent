@@ -43,7 +43,8 @@ services:
       - ./data/ib-gateway:/root/Jts:rw
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "4002"]
+      # nc is missing in ib-gateway image; use bash /dev/tcp probe instead
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/4002' 2>/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -106,6 +107,32 @@ services:
       retries: 3
       start_period: 30s
     command: python -m tools.trading_gui
+
+  # =============================================================================
+  # Discord Trading Bot - Handles BUY/SELL commands via Discord
+  # =============================================================================
+  # Connects to IB Gateway via IBKRAsyncClient + AsyncOrderExecutor.
+  # When a user says "@bot buy HOOD", it analyzes the stock,
+  # computes ideal entry, and places a limit order.
+  # Usage: docker compose --profile discord-bot up -d
+  discord-bot:
+    build: .
+    container_name: saiyan-discord-bot
+    profiles:
+      - discord-bot
+      - full
+    environment:
+      - IB_HOST=ib-gateway
+      - IB_PORT=4004
+      - IB_CLIENT_ID=50
+      - IB_TRADING_MODE=${IB_TRADING_MODE:-paper}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./workspace:/app/workspace
+      - ./data:/app/data
+    restart: unless-stopped
+    command: python /app/workspace/scripts/discord_bot/interactive_bot.py
 
   # =============================================================================
   # Trading Agent - Standalone GUI (connects to local IB Gateway)

@@ -14,7 +14,8 @@ CHANNELS = [
 ]
 
 AUTH_TOKEN = os.environ.get("DISCORD_USER_TOKEN", "")
-DATA_FILE = "/Users/francisyang/Downloads/trading_agent/workspace/data/real_discord_messages_goku_wilson_60d.txt"
+# Use relative path so it works on both local Mac and AWS
+DATA_FILE = os.path.join(os.path.dirname(__file__), '../../data/real_discord_messages_goku_wilson_60d.txt')
 
 def fetch_messages(channel_id, params):
     """Base fetch function"""
