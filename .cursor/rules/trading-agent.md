@@ -104,7 +104,7 @@ gcloud compute ssh trading-vm --zone=us-east1-b
 ### API Keys (Environment Variables)
 - `DISCORD_BOT_TOKEN` - Discord bot for posting to Rich or Die
 - `DISCORD_USER_TOKEN` - Discord user token for scraping Goku/Wilson
-- `MINIMAX_API_KEY` - MiniMax LLM for analysis (Anthropic-compatible SDK, model: MiniMax-M2.1)
+- `MINIMAX_API_KEY` - MiniMax LLM for analysis (Anthropic-compatible SDK, model: MiniMax-M2.5)
 
 ### Daily Bot Schedule
 - **Time**: 11:50 AM PST (19:50 UTC) Monday-Friday
@@ -378,7 +378,7 @@ Discord signal detected → Record ticker + price at signal time
 
 ### Image Analysis
 - Discord messages with chart images (attachments/embeds) are detected
-- Images sent to MiniMax M2.1 vision API for chart pattern analysis
+- Images sent to MiniMax M2.5 vision API for chart pattern analysis
 - Analysis stored alongside signal record for future reference
 
 ### Adaptive Pipeline Scoring

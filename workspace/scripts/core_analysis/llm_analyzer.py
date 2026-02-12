@@ -40,13 +40,25 @@ def get_stock_context(ticker: str) -> Dict:
         latest = hist.iloc[-1]
         current_price = float(latest['Close'])
         
+        # Calculate RSI (14-period)
+        delta = hist['Close'].diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = (-delta).where(delta < 0, 0.0)
+        avg_gain = gain.rolling(window=14, min_periods=14).mean()
+        avg_loss = loss.rolling(window=14, min_periods=14).mean()
+        rs = avg_gain / avg_loss.replace(0, float('nan'))
+        rsi_series = 100 - (100 / (1 + rs))
+        import math
+        last_rsi = rsi_series.iloc[-1] if not rsi_series.empty else float('nan')
+        rsi_value = round(float(last_rsi), 1) if not math.isnan(float(last_rsi)) else None
+
         # Get price at different periods
         prices = {}
         for days_ago in [5, 10, 30]:
             if len(hist) > days_ago:
                 prices[f'{days_ago}d_ago'] = float(hist['Close'].iloc[-days_ago-1])
         
-        return {
+        result = {
             "current_price": round(current_price, 2),
             "ema8": round(float(latest['EMA8']), 2),
             "ema21": round(float(latest['EMA21']), 2),
@@ -56,8 +68,11 @@ def get_stock_context(ticker: str) -> Dict:
             "historical_prices": prices,
             "52w_high": round(float(hist['Close'].max()), 2),
             "52w_low": round(float(hist['Close'].min()), 2),
-            "avg_volume": int(hist['Volume'].mean())
+            "avg_volume": int(hist['Volume'].mean()),
         }
+        if rsi_value is not None:
+            result["rsi"] = rsi_value
+        return result
     except Exception as e:
         return {"error": str(e)}
 
@@ -187,7 +202,7 @@ def _call_minimax_anthropic(prompt: str, max_tokens: int, stock_context: Dict, t
         )
         
         message = client.messages.create(
-            model="MiniMax-M2.1",
+            model="MiniMax-M2.5",
             max_tokens=max_tokens,
             messages=[
                 {

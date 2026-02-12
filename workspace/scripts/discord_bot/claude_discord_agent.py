@@ -35,7 +35,7 @@ import subprocess
 import uuid
 import time
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # ============================================================================
@@ -78,6 +78,13 @@ ADDITIONAL_DIRS = [
 # MAX_TURNS_PER_REQUEST removed - no turn limit (Claude can work until task completes)
 CLAUDE_TIMEOUT_SECONDS = 1200   # 20 minute timeout per request
 DISCORD_MSG_LIMIT = 2000        # Discord character limit
+
+# Proactive agent — channel to send unprompted messages to (Rich or Die)
+PROACTIVE_CHANNEL_ID = int(os.environ.get("PROACTIVE_CHANNEL_ID", "1345123472019423284"))
+
+# Proactive schedule (PST hours)
+CODEBASE_REVIEW_HOUR_PST = 6   # 6:00 AM PST — daily codebase retrospective
+MARKET_NEWS_HOURS_PST = [6, 10, 14]  # 6 AM, 10 AM, 2 PM PST
 
 # Session tracking: map Discord thread/channel -> Claude session ID
 SESSION_FILE = Path(__file__).parent / "claude_sessions.json"
@@ -159,7 +166,7 @@ async def run_claude(
 ) -> str:
     """
     Run Claude Code CLI in print mode and return the response.
-    Uses MiniMax M2.1 model via Anthropic-compatible API.
+    Uses MiniMax M2.5 model via Anthropic-compatible API.
 
     Args:
         message: The user's message/query
@@ -191,13 +198,13 @@ async def run_claude(
     # Build environment with MiniMax API settings
     env = os.environ.copy()
     env["PATH"] = os.path.expanduser("~/.local/bin") + ":" + env.get("PATH", "")
-    # MiniMax M2.1 via Anthropic-compatible API
+    # MiniMax M2.5 via Anthropic-compatible API
     env["ANTHROPIC_BASE_URL"] = "https://api.minimax.io/anthropic"
     env["ANTHROPIC_AUTH_TOKEN"] = os.environ.get(
         "MINIMAX_API_KEY",
         "sk-cp-htdF5-oZpUcqnZNM0T1qBmC6ZPp3iD3XsV6Mf7fjmKmdSDZy3AqWvBVTsQz3BSwZb-CSzpg6nnxvtntLReoCvHBOwQb2yNFH-rUVxI0ade1zDrLCcqMgPF0",
     )
-    env["ANTHROPIC_MODEL"] = "MiniMax-M2.1"
+    env["ANTHROPIC_MODEL"] = "MiniMax-M2.5"
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     env["API_TIMEOUT_MS"] = "3000000"
 
@@ -205,6 +212,7 @@ async def run_claude(
 
     try:
         # Pipe message via stdin (required for headless mode)
+        # Start in new process group so we can kill the entire tree on timeout
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -212,6 +220,7 @@ async def run_claude(
             stderr=asyncio.subprocess.PIPE,
             cwd=WORKSPACE_DIR,
             env=env,
+            start_new_session=True,  # Creates new process group for clean kill
         )
 
         try:
@@ -220,9 +229,28 @@ async def run_claude(
                 timeout=CLAUDE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
-            return "Request timed out (2 minute limit). Try a simpler question or break it into smaller tasks."
+            log.warning(f"Claude CLI timed out after {CLAUDE_TIMEOUT_SECONDS}s — killing process tree")
+            # Kill the entire process group to handle child processes
+            try:
+                import signal as sig
+                import os as _os
+                # Try SIGTERM first (graceful)
+                _os.killpg(_os.getpgid(process.pid), sig.SIGTERM)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    # SIGKILL if still alive
+                    _os.killpg(_os.getpgid(process.pid), sig.SIGKILL)
+                    await asyncio.wait_for(process.wait(), timeout=5)
+            except (ProcessLookupError, OSError):
+                # Process already dead — that's fine
+                pass
+            except asyncio.TimeoutError:
+                log.error("Process still alive after SIGKILL — possible zombie")
+            return (
+                f"Request timed out after {CLAUDE_TIMEOUT_SECONDS // 60} minutes. "
+                "Try a simpler question or break it into smaller tasks."
+            )
 
         response = stdout.decode("utf-8", errors="replace").strip()
 
@@ -248,6 +276,243 @@ async def run_claude(
     except Exception as e:
         log.error(f"Unexpected error running Claude: {e}")
         return f"Error running Claude: {str(e)[:200]}"
+
+
+# ============================================================================
+# PROACTIVE AGENT — Background scheduled tasks
+# ============================================================================
+
+def _utc_to_pst_hour(utc_dt: datetime) -> int:
+    """Convert UTC datetime to approximate PST hour (no DST)."""
+    return (utc_dt.hour - 8) % 24
+
+
+async def _safe_send_chunked(channel, text: str, prefix: str = ""):
+    """Send a long message to Discord, splitting into chunks if needed."""
+    if prefix:
+        text = f"{prefix}\n{text}"
+    if not text or not text.strip():
+        return
+    chunks = split_message(text, DISCORD_MSG_LIMIT)
+    for chunk in chunks:
+        try:
+            await channel.send(chunk)
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            log.error(f"Failed to send proactive message chunk: {e}")
+
+
+def _get_portfolio_tickers() -> list:
+    """
+    Get current portfolio tickers from local data files.
+    Checks pipeline candidates and approved trades for active tickers.
+    """
+    tickers = set()
+    data_dir = os.path.expanduser("~/trading-agent/workspace/data")
+
+    # From pipeline candidates
+    candidates_file = os.path.join(data_dir, "pipeline_candidates.json")
+    if os.path.exists(candidates_file):
+        try:
+            with open(candidates_file) as f:
+                candidates = json.load(f)
+            for c in candidates:
+                t = c.get("ticker", "")
+                if t:
+                    tickers.add(t.upper())
+        except Exception:
+            pass
+
+    # From approved trades
+    approved_file = os.path.join(data_dir, "approved_trades.json")
+    if os.path.exists(approved_file):
+        try:
+            with open(approved_file) as f:
+                approved = json.load(f)
+            for t in approved:
+                ticker = t.get("ticker", "")
+                if ticker:
+                    tickers.add(ticker.upper())
+        except Exception:
+            pass
+
+    # Fallback: common watchlist if nothing found
+    if not tickers:
+        tickers = {"AAPL", "NVDA", "TSLA", "MSFT", "AMZN", "META", "GOOG", "SPY", "QQQ"}
+
+    return sorted(tickers)
+
+
+async def _fetch_market_news(tickers: list) -> str:
+    """
+    Fetch recent news for portfolio tickers using yfinance.
+    Returns formatted news text for LLM analysis.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        return "yfinance not available for news fetching."
+
+    all_news = []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=8)
+
+    for ticker in tickers[:12]:  # Cap at 12 tickers to avoid slowness
+        try:
+            stock = yf.Ticker(ticker)
+            news = stock.news
+            if not news:
+                continue
+            for item in news[:3]:  # Top 3 per ticker
+                title = item.get("title", "")
+                publisher = item.get("publisher", "")
+                link = item.get("link", "")
+                pub_ts = item.get("providerPublishTime", 0)
+                pub_dt = datetime.fromtimestamp(pub_ts, tz=timezone.utc) if pub_ts else None
+
+                if pub_dt and pub_dt < cutoff:
+                    continue  # Skip old news
+
+                all_news.append(
+                    f"[{ticker}] {title} — {publisher}"
+                    + (f" ({pub_dt.strftime('%m/%d %H:%M')} UTC)" if pub_dt else "")
+                )
+        except Exception as e:
+            log.debug(f"News fetch error for {ticker}: {e}")
+
+    if not all_news:
+        return ""
+
+    return "\n".join(all_news[:30])
+
+
+async def _proactive_codebase_review(client):
+    """
+    Daily codebase retrospective at CODEBASE_REVIEW_HOUR_PST.
+    Uses Claude Code CLI to scan the trading-agent codebase and suggest improvements.
+    Sends findings to the proactive Discord channel.
+    """
+    await asyncio.sleep(300)  # Wait 5 min after startup
+
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            pst_hour = _utc_to_pst_hour(now)
+            is_weekday = now.weekday() < 5
+
+            if is_weekday and pst_hour == CODEBASE_REVIEW_HOUR_PST and now.minute <= 3:
+                log.info("Proactive: Starting daily codebase retrospective")
+                channel = client.get_channel(PROACTIVE_CHANNEL_ID)
+                if not channel:
+                    log.warning(f"Proactive channel {PROACTIVE_CHANNEL_ID} not found")
+                    await asyncio.sleep(3600)
+                    continue
+
+                prompt = (
+                    "You are doing a daily self-retrospective of the trading-agent codebase.\n"
+                    "Scan ~/trading-agent/ and provide a brief improvement report.\n\n"
+                    "Check these areas (be concise — Discord format, under 1800 chars total):\n"
+                    "1. **Bugs/Errors**: Any Python syntax errors, import failures, or broken references?\n"
+                    "2. **TODOs/FIXMEs**: List any unresolved TODO or FIXME comments.\n"
+                    "3. **Config Issues**: Missing env vars, hardcoded secrets, stale paths?\n"
+                    "4. **Code Quality**: Duplicated logic, dead code, or inconsistencies between files?\n"
+                    "5. **Test Gaps**: Critical modules without tests?\n\n"
+                    "Format your response as:\n"
+                    "🔍 **Daily Codebase Review** — {date}\n\n"
+                    "Then list findings grouped by severity (🔴 Critical, 🟡 Warning, 🟢 Suggestion).\n"
+                    "End with a 1-line summary: 'Overall health: X/10'.\n"
+                    "If everything looks good, say so — don't invent problems."
+                )
+
+                try:
+                    response = await run_claude(message=prompt)
+                    if response and not response.startswith("Error"):
+                        await _safe_send_chunked(
+                            channel, response,
+                            prefix="🤖 **Proactive Codebase Review** (automated daily scan)"
+                        )
+                        log.info(f"Proactive codebase review sent ({len(response)} chars)")
+                    else:
+                        log.warning(f"Codebase review returned error: {response[:200]}")
+                except Exception as e:
+                    log.error(f"Codebase review Claude call failed: {e}")
+
+                await asyncio.sleep(3600)  # Don't trigger again for 1 hour
+            else:
+                await asyncio.sleep(60)
+        except Exception as e:
+            log.error(f"Proactive codebase review error: {e}")
+            await asyncio.sleep(600)
+
+
+async def _proactive_market_news(client):
+    """
+    Market news monitor — runs every 4 hours during market hours.
+    Fetches news for portfolio tickers, analyzes impact with MiniMax,
+    and sends actionable alerts to Discord.
+    """
+    await asyncio.sleep(600)  # Wait 10 min after startup
+
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            pst_hour = _utc_to_pst_hour(now)
+            is_weekday = now.weekday() < 5
+
+            if is_weekday and pst_hour in MARKET_NEWS_HOURS_PST and now.minute <= 3:
+                log.info(f"Proactive: Market news scan ({pst_hour}:00 PST)")
+                channel = client.get_channel(PROACTIVE_CHANNEL_ID)
+                if not channel:
+                    log.warning(f"Proactive channel {PROACTIVE_CHANNEL_ID} not found")
+                    await asyncio.sleep(3600)
+                    continue
+
+                # Gather portfolio tickers and their news
+                tickers = _get_portfolio_tickers()
+                news_text = await _fetch_market_news(tickers)
+
+                if not news_text:
+                    log.info("No recent news found for portfolio tickers")
+                    await asyncio.sleep(3600)
+                    continue
+
+                prompt = (
+                    f"You are a trading desk analyst monitoring news for a portfolio.\n\n"
+                    f"PORTFOLIO TICKERS: {', '.join(tickers)}\n\n"
+                    f"RECENT NEWS:\n{news_text}\n\n"
+                    f"Analyze which news items could materially affect the portfolio.\n"
+                    f"For each significant item:\n"
+                    f"1. Which ticker(s) are impacted\n"
+                    f"2. Expected impact (bullish/bearish/neutral)\n"
+                    f"3. Suggested action (hold/add/trim/watch)\n"
+                    f"4. Urgency (act now vs monitor)\n\n"
+                    f"Format for Discord (<1800 chars):\n"
+                    f"📰 **Market News Scan** — {{time}} PST\n\n"
+                    f"Use these icons:\n"
+                    f"🔴 = bearish/risk   🟢 = bullish/opportunity   🟡 = monitor\n\n"
+                    f"If nothing is material, send a 1-line 'all clear' message.\n"
+                    f"Be specific with price implications. No filler."
+                )
+
+                try:
+                    # Use Claude CLI for richer analysis (can check current prices too)
+                    response = await run_claude(message=prompt)
+                    if response and not response.startswith("Error"):
+                        await _safe_send_chunked(
+                            channel, response,
+                            prefix="🤖 **Proactive Market Alert** (automated news scan)"
+                        )
+                        log.info(f"Proactive market news sent ({len(response)} chars)")
+                    else:
+                        log.warning(f"Market news analysis returned error: {response[:200]}")
+                except Exception as e:
+                    log.error(f"Market news Claude call failed: {e}")
+
+                await asyncio.sleep(3600)  # Don't trigger again for 1 hour
+            else:
+                await asyncio.sleep(60)
+        except Exception as e:
+            log.error(f"Proactive market news error: {e}")
+            await asyncio.sleep(600)
 
 
 # ============================================================================
@@ -284,6 +549,13 @@ def run_bot():
         log.info(f"Workspace: {WORKSPACE_DIR} (full home directory access)")
         log.info(f"Additional dirs: {', '.join(ADDITIONAL_DIRS) if ADDITIONAL_DIRS else 'none'}")
         log.info("Ready - listening for @mentions...")
+
+        # Start proactive background tasks
+        log.info("Starting proactive agent tasks...")
+        asyncio.create_task(_proactive_codebase_review(client))
+        asyncio.create_task(_proactive_market_news(client))
+        log.info(f"  Codebase review: daily at {CODEBASE_REVIEW_HOUR_PST}:00 AM PST (weekdays)")
+        log.info(f"  Market news: {MARKET_NEWS_HOURS_PST} PST (weekdays)")
 
     @client.event
     async def on_message(message):
@@ -437,6 +709,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # MiniMax API key is configured in ~/.claude/settings.json and in run_claude()
-    log.info("Using MiniMax M2.1 model via Claude Code CLI")
+    log.info("Using MiniMax M2.5 model via Claude Code CLI")
 
     run_bot()

@@ -33,10 +33,21 @@ rsync -avz --progress \
     ./requirements.txt \
     $AWS_HOST:$REMOTE_DIR/
 
+# Sync scripts (services, health monitor, deploy)
+rsync -avz --progress \
+    -e "ssh -i $AWS_KEY" \
+    ./scripts/ \
+    $AWS_HOST:$REMOTE_DIR/scripts/
+
 echo "=== Sync complete ==="
 echo ""
 echo "Next steps on AWS:"
 echo "  ssh -i $AWS_KEY $AWS_HOST"
 echo "  cd $REMOTE_DIR"
 echo "  pip install -r requirements.txt"
-echo "  npm install (if needed)"
+echo ""
+echo "To install/restart bot services:"
+echo "  bash scripts/deploy_bots_aws.sh"
+echo ""
+echo "To check bot health:"
+echo "  bash scripts/bot_health_monitor.sh"
