@@ -2429,6 +2429,109 @@ def api_analyze(ticker):
     return jsonify(result)
 
 
+# =========================================================================
+# Fundamental Data Endpoints (for remote data provider)
+# =========================================================================
+
+@app.route('/api/fundamentals/profile/<ticker>')
+@require_api_key
+def api_fundamentals_profile(ticker):
+    """
+    Fetch company profile / key ratios from IBKR via reqFundamentalData.
+
+    Requires "Reuters Global Fundamentals" subscription on IBKR account.
+
+    GET /api/fundamentals/profile/AAPL  (with X-API-Key header)
+
+    Returns JSON:
+        {"ticker": "AAPL", "roe": 0.25, "gross_margin": 0.45,
+         "debt_to_equity": 0.8, "eps": 6.5, "market_cap": 2.5e12, ...}
+    """
+    from ib_async import Stock as _FStock
+
+    ib = get_ib()
+    if not ib or not ib.isConnected():
+        return jsonify({"error": "Not connected to IBKR"}), 503
+
+    ticker = ticker.upper().strip()
+
+    try:
+        contract = _FStock(ticker, 'SMART', 'USD')
+        with _ib_lock:
+            track_api_call()
+            ib.qualifyContracts(contract)
+            xml_data = ib.reqFundamentalData(contract, reportType='ReportsFinSummary')
+
+        if not xml_data:
+            return jsonify({"error": f"No fundamental data for {ticker}", "ticker": ticker}), 404
+
+        # Parse the Reuters XML
+        from src.data.ibkr_fundamentals_parser import parse_fin_summary
+        result = parse_fin_summary(xml_data)
+        if not result:
+            return jsonify({"error": f"Failed to parse fundamental data for {ticker}", "ticker": ticker}), 404
+
+        result["ticker"] = ticker
+        result["source"] = "ibkr_reuters"
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Fundamental profile error for {ticker}: {e}")
+        return jsonify({"error": str(e), "ticker": ticker}), 500
+
+
+@app.route('/api/fundamentals/quarterly/<ticker>')
+@require_api_key
+def api_fundamentals_quarterly(ticker):
+    """
+    Fetch quarterly financial statements from IBKR via reqFundamentalData.
+
+    GET /api/fundamentals/quarterly/AAPL  (with X-API-Key header)
+
+    Returns JSON array of quarterly records:
+        [{"report_date": "2025-09-30", "eps": 1.46, "revenue": 94680000000,
+          "roe": 0.25, "gross_margin": 0.46}, ...]
+    """
+    from ib_async import Stock as _FStock
+
+    ib = get_ib()
+    if not ib or not ib.isConnected():
+        return jsonify({"error": "Not connected to IBKR"}), 503
+
+    ticker = ticker.upper().strip()
+
+    try:
+        contract = _FStock(ticker, 'SMART', 'USD')
+        with _ib_lock:
+            track_api_call()
+            ib.qualifyContracts(contract)
+            xml_data = ib.reqFundamentalData(contract, reportType='ReportsFinStatements')
+
+        if not xml_data:
+            return jsonify({"error": f"No quarterly data for {ticker}", "ticker": ticker}), 404
+
+        from src.data.ibkr_fundamentals_parser import parse_fin_statements
+        df = parse_fin_statements(xml_data)
+        if df is None or df.empty:
+            return jsonify({"error": f"Failed to parse quarterly data for {ticker}", "ticker": ticker}), 404
+
+        # Fill in ticker
+        df["ticker"] = ticker
+        df["source"] = "ibkr_reuters"
+
+        # Convert dates to strings for JSON
+        for col in ("report_date", "disclosure_date"):
+            if col in df.columns:
+                df[col] = df[col].astype(str)
+
+        records = df.to_dict(orient="records")
+        return jsonify(records)
+
+    except Exception as e:
+        logger.error(f"Fundamental quarterly error for {ticker}: {e}")
+        return jsonify({"error": str(e), "ticker": ticker}), 500
+
+
 @app.route('/api/pending_entries')
 def api_pending_entries():
     """Get status of conditional/pending scaled entries."""

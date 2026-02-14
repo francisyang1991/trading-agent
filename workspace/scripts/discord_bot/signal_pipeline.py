@@ -192,7 +192,7 @@ async def collect_scanner_signals(call_api_fn, tickers: List[str]) -> Dict[str, 
     Returns: {ticker: {scan data}}
     """
     results = {}
-    for ticker in tickers[:15]:  # Limit to 15 to avoid rate limits
+    for ticker in tickers:
         try:
             data = await call_api_fn(f"/api/analyze/{ticker}")
             if data and data.get("success"):
@@ -708,24 +708,87 @@ def format_portfolio_suggestions(positions: List[Dict], candidates: List[SignalC
 # Main Pipeline Orchestrator
 # ===================================================================
 
+def _load_universe_tickers(max_tickers: int = 80) -> List[str]:
+    """Load prioritized stock universe from YAML config.
+
+    Returns up to max_tickers unique symbols from high_conviction, momentum,
+    themed sectors, and the full all_symbols list.
+    """
+    universe_file = os.path.join(os.path.dirname(__file__), '../../../config/stock_universe.yaml')
+    try:
+        import yaml
+        with open(universe_file, 'r') as f:
+            data = yaml.safe_load(f)
+    except Exception as e:
+        log.warning(f"Could not load stock universe: {e}")
+        return []
+
+    seen: set = set()
+    ordered: List[str] = []
+
+    def _add(symbols):
+        for sym in symbols:
+            s = str(sym).upper().strip('"')
+            if s not in seen and len(s) >= 1:
+                seen.add(s)
+                ordered.append(s)
+
+    # Priority lists
+    for key in ['high_conviction', 'volatile_momentum', 'quick_test']:
+        _add(data.get(key, []))
+
+    # Priority themes
+    themes = data.get('themes', {})
+    for tkey in ['mag7', 'ai_chips', 'ai_software', 'momentum_leaders',
+                 'fintech', 'cybersecurity', 'clean_energy', 'crypto',
+                 'wilson', 'saiyan', 'moonvest']:
+        _add(themes.get(tkey, {}).get('symbols', []))
+
+    # Fill from all_symbols
+    _add(data.get('all_symbols', []))
+
+    return ordered[:max_tickers]
+
+
+# Candidates history directory for dated snapshots
+CANDIDATES_HISTORY_DIR = os.path.join(DATA_DIR, 'candidates_history')
+os.makedirs(CANDIDATES_HISTORY_DIR, exist_ok=True)
+
+
+def _save_candidates_with_history(candidates: List[SignalCandidate]):
+    """Save candidates to live file AND a dated history file for replay/audit."""
+    save_candidates(candidates)
+
+    date_str = datetime.now().strftime('%Y%m%d_%H%M')
+    history_file = os.path.join(CANDIDATES_HISTORY_DIR, f'candidates_{date_str}.json')
+    data = [c.to_dict() for c in candidates]
+    with open(history_file, 'w') as f:
+        json.dump(data, f, indent=2, default=str)
+    log.info(f"Saved candidates history to {history_file}")
+
+
 async def run_full_pipeline(
     data_file: str,
     call_api_fn,
     llm_fn=None,
     discord_days: int = 3,
+    universe_size: int = 80,
 ) -> Tuple[List[SignalCandidate], List[str]]:
     """
     Run the full signal pipeline:
       1. Collect Discord signals
-      2. Run scanner on top tickers
-      3. Build & rank candidates
-      4. Generate digest messages
+      2. Load universe tickers (50-100) + merge with Discord mentions
+      3. Run scanner on merged list in batches
+      4. Build & rank candidates
+      5. Save with dated timestamp
+      6. Generate digest messages
 
     Args:
         data_file: path to Discord signals cache
         call_api_fn: async function to call GCloud API
         llm_fn: optional LLM function for enhanced analysis
         discord_days: days of Discord history to analyze
+        universe_size: max tickers from universe config (default 80)
 
     Returns:
         (candidates, digest_messages)
@@ -736,27 +799,50 @@ async def run_full_pipeline(
     discord_signals = await collect_discord_signals(data_file, days=discord_days)
     log.info(f"  Discord: {len(discord_signals)} tickers with signals")
 
-    # Phase 1b: Pick top tickers to scan (most mentioned + some from universe)
+    # Phase 1b: Build scan list — Discord tickers (sorted by mentions) + universe
     top_discord = sorted(
         discord_signals.items(),
         key=lambda x: x[1]['mentions'],
         reverse=True
-    )[:10]
-    tickers_to_scan = [t for t, _ in top_discord]
+    )
+    discord_tickers = [t for t, _ in top_discord]
 
-    # Phase 1c: Run scanner on those tickers
-    log.info(f"Pipeline: Phase 1c — Scanning {len(tickers_to_scan)} tickers via GCloud")
-    scanner_results = await collect_scanner_signals(call_api_fn, tickers_to_scan)
-    log.info(f"  Scanner: {len(scanner_results)} tickers analyzed")
+    # Load universe tickers (prioritized)
+    universe_tickers = _load_universe_tickers(universe_size)
+    log.info(f"  Universe: {len(universe_tickers)} tickers loaded")
 
-    # Phase 2: Build & rank candidates
-    log.info("Pipeline: Phase 2 — Ranking candidates")
+    # Merge: Discord first (they have human signal), then universe fill (dedup)
+    seen = set()
+    tickers_to_scan = []
+    for t in discord_tickers + universe_tickers:
+        if t not in seen:
+            seen.add(t)
+            tickers_to_scan.append(t)
+
+    log.info(f"Pipeline: Phase 2 — Scanning {len(tickers_to_scan)} tickers via GCloud")
+
+    # Scan in batches of 10 with rate limiting
+    scanner_results = {}
+    batch_size = 10
+    for i in range(0, len(tickers_to_scan), batch_size):
+        batch = tickers_to_scan[i:i + batch_size]
+        batch_results = await collect_scanner_signals(call_api_fn, batch)
+        scanner_results.update(batch_results)
+        scanned = min(i + batch_size, len(tickers_to_scan))
+        log.info(f"  Scanned {scanned}/{len(tickers_to_scan)} — {len(scanner_results)} results so far")
+        if i + batch_size < len(tickers_to_scan):
+            await asyncio.sleep(0.5)  # Courtesy delay between batches
+
+    log.info(f"  Scanner: {len(scanner_results)} tickers analyzed total")
+
+    # Phase 3: Build & rank candidates
+    log.info("Pipeline: Phase 3 — Ranking candidates")
     candidates = build_candidates(discord_signals, scanner_results)
-    save_candidates(candidates)
+    _save_candidates_with_history(candidates)
     log.info(f"  Ranked {len(candidates)} candidates")
 
-    # Phase 3: Generate digest
-    log.info("Pipeline: Phase 3 — Generating digest")
+    # Phase 4: Generate digest
+    log.info("Pipeline: Phase 4 — Generating digest")
 
     if llm_fn:
         # Try LLM-enhanced digest

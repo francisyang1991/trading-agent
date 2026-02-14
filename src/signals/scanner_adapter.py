@@ -33,6 +33,7 @@ from .entry.mean_reversion_entry import MeanReversionEntrySignal
 
 from ..core.types import Signal, SignalType, Regime, VolatilityLevel
 from ..regime import classify_regime, classify_volatility, Regime as RegimeEnum, VolCategory
+from ..strategy.router import ConfigStrategyRouter
 
 
 @dataclass
@@ -86,8 +87,9 @@ class ScannerAdapter:
         all_signals = adapter.scan_stock('NVDA', price_data)
     """
     
-    def __init__(self):
+    def __init__(self, strategy_router: Optional[ConfigStrategyRouter] = None):
         """Initialize signal generators with default configs."""
+        self.strategy_router = strategy_router or ConfigStrategyRouter()
         # Volume pullback is highest priority
         self.volume_pullback = VolumePullbackEntrySignal(
             config=VolumePullbackConfig(
@@ -174,6 +176,8 @@ class ScannerAdapter:
         self,
         symbol: str,
         data: pd.DataFrame,
+        tier: Optional[str] = None,
+        sector: Optional[str] = None,
     ) -> List[ScannerSignal]:
         """
         Scan a stock for all signal types.
@@ -193,10 +197,12 @@ class ScannerAdapter:
             List of ScannerSignal objects, ordered by priority
         """
         signals = []
+        profile = self.strategy_router.route(symbol, tier=tier, sector=sector)
+        allowed_entries = set(profile.entry_strategies) if profile else set()
         
         # 1. Volume Pullback (highest priority)
         vp_signal = self.check_volume_pullback(symbol, data)
-        if vp_signal:
+        if vp_signal and (not allowed_entries or "VOLUME_PULLBACK" in allowed_entries):
             signals.append(vp_signal)
         
         # 2. Other signals (lower priority)
@@ -207,6 +213,8 @@ class ScannerAdapter:
             (self.breakout_entry, 'BREAKOUT_ENTRY'),
             (self.mean_reversion_entry, 'MEAN_REVERSION'),
         ]:
+            if allowed_entries and signal_type not in allowed_entries:
+                continue
             try:
                 signal = generator.generate(symbol, data)
                 if signal:

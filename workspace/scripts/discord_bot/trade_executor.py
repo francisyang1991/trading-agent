@@ -27,7 +27,7 @@ log = logging.getLogger("trade-executor")
 # ---------------------------------------------------------------------------
 # Config (set via env vars)
 # ---------------------------------------------------------------------------
-TRADE_API_URL = os.environ.get("TRADE_API_URL", "http://localhost:8080")
+TRADE_API_URL = os.environ.get("TRADE_API_URL", "http://34.75.9.166:8080")
 TRADE_API_KEY = os.environ.get("TRADE_API_KEY", "saiyan-trade-2026")
 TRADE_LOG = os.path.join(os.path.dirname(__file__), "../../data/discord_trades.json")
 

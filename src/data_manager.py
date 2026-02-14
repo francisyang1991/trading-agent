@@ -45,14 +45,25 @@ import sqlite3
 import os
 import sys
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import warnings
 warnings.filterwarnings('ignore')
+
+from src.data.factor_alignment import align_fundamentals_to_daily
+from src.data.parquet_store import ParquetDataStore
+from src.data.mysql_store import MySQLFundamentalsStore
+from src.data.providers import (
+    FMPProvider,
+    IBKRGcloudFundamentalProvider,
+    ResilientFundamentalProvider,
+    ResilientMarketDataProvider,
+    YFinanceProvider,
+)
+from src.data.schemas import validate_daily_ohlcv, validate_quarterly_fundamentals
 
 
 # ============================================================================
@@ -115,8 +126,11 @@ def init_database():
             forward_pe REAL,
             dividend_yield REAL,
             profit_margin REAL,
+            gross_margin REAL,
             revenue_growth REAL,
             earnings_growth REAL,
+            roe REAL,
+            debt_to_equity REAL,
             fifty_two_week_high REAL,
             fifty_two_week_low REAL,
             avg_volume REAL,
@@ -124,6 +138,17 @@ def init_database():
             last_updated TIMESTAMP
         )
     """)
+
+    # Ensure newly added columns exist for existing DBs.
+    cursor.execute("PRAGMA table_info(stock_fundamentals)")
+    existing_cols = {row[1] for row in cursor.fetchall()}
+    for col_name, col_type in (
+        ("gross_margin", "REAL"),
+        ("roe", "REAL"),
+        ("debt_to_equity", "REAL"),
+    ):
+        if col_name not in existing_cols:
+            cursor.execute(f"ALTER TABLE stock_fundamentals ADD COLUMN {col_name} {col_type}")
     
     # Metadata for tracking updates
     cursor.execute("""
@@ -153,7 +178,12 @@ class DataManager:
     Manages stock data with local SQLite caching.
     """
     
-    def __init__(self, max_daily_age_hours: int = 12, max_fundamental_age_days: int = 7):
+    def __init__(
+        self,
+        max_daily_age_hours: int = 12,
+        max_fundamental_age_days: int = 7,
+        parquet_root_dir: str = "data",
+    ):
         """
         Initialize DataManager.
         
@@ -165,6 +195,19 @@ class DataManager:
         self.max_fundamental_age = timedelta(days=max_fundamental_age_days)
         self._lock = threading.Lock()
         self._cache = {}  # In-memory cache for current session
+        self.parquet_store = ParquetDataStore(parquet_root_dir)
+        self.mysql_store = MySQLFundamentalsStore()
+
+        # Provider stack is pluggable; current defaults prioritize yfinance for prices
+        # and FMP for fundamentals.
+        yf_provider = YFinanceProvider()
+        self.market_provider = ResilientMarketDataProvider([yf_provider])
+
+        ibkr_fund = IBKRGcloudFundamentalProvider()
+        fundamental_chain = [yf_provider, ibkr_fund, FMPProvider()]
+        # Filter out providers with no API key / no endpoint configured.
+        active_fundamentals = [p for p in fundamental_chain if getattr(p, "_enabled", lambda: True)()]
+        self.fundamental_provider = ResilientFundamentalProvider(active_fundamentals)
     
     def get_connection(self) -> sqlite3.Connection:
         """Get thread-safe database connection."""
@@ -332,52 +375,65 @@ class DataManager:
     def _fetch_daily_from_api(self, symbol: str, period: str) -> Optional[pd.DataFrame]:
         """Fetch daily data from Yahoo Finance API."""
         try:
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(period=period)
-            
-            if data.empty:
+            data = self.market_provider.get_daily_ohlcv(symbol, period=period)
+            if data is None or data.empty:
                 return None
-            
-            # Reset index to get Date as column
-            data = data.reset_index()
-            data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Dividends', 'Stock Splits']
-            data['Date'] = pd.to_datetime(data['Date']).dt.date
-            
-            return data[['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+            validated = validate_daily_ohlcv(data)
+            # Keep legacy DB format while preserving adj_close in parquet lane.
+            self.parquet_store.save_daily(symbol, validated)
+            out = validated.rename(
+                columns={
+                    "date": "Date",
+                    "open": "Open",
+                    "high": "High",
+                    "low": "Low",
+                    "close": "Close",
+                    "volume": "Volume",
+                }
+            )
+            return out[["Date", "Open", "High", "Low", "Close", "Volume"]]
             
         except Exception as e:
             print(f"   ⚠️ API error for {symbol}: {e}")
             return None
     
     def _save_daily_to_db(self, symbol: str, data: pd.DataFrame):
-        """Save daily data to database."""
+        """Save daily data to database (bulk insert)."""
         with self._lock:
             conn = self.get_connection()
             cursor = conn.cursor()
-            
-            # Insert or replace data
-            for _, row in data.iterrows():
-                cursor.execute("""
-                    INSERT OR REPLACE INTO stock_daily 
-                    (symbol, date, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
+
+            rows = [
+                (
                     symbol,
-                    row['Date'],
-                    row['Open'],
-                    row['High'],
-                    row['Low'],
-                    row['Close'],
-                    int(row['Volume']) if pd.notna(row['Volume']) else 0
-                ))
-            
+                    row["Date"],
+                    row["Open"],
+                    row["High"],
+                    row["Low"],
+                    row["Close"],
+                    int(row["Volume"]) if pd.notna(row["Volume"]) else 0,
+                )
+                for _, row in data.iterrows()
+            ]
+            cursor.executemany(
+                """
+                INSERT OR REPLACE INTO stock_daily 
+                (symbol, date, open, high, low, close, volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
             # Update metadata
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT OR REPLACE INTO data_metadata 
                 (symbol, daily_last_date, daily_last_updated)
                 VALUES (?, ?, ?)
-            """, (symbol, data['Date'].max(), datetime.now().isoformat()))
-            
+                """,
+                (symbol, data["Date"].max(), datetime.now().isoformat()),
+            )
+
             conn.commit()
             conn.close()
     
@@ -414,7 +470,14 @@ class DataManager:
     # FUNDAMENTALS
     # -------------------------------------------------------------------------
     
-    def get_fundamentals(self, symbol: str, force_refresh: bool = False) -> Dict:
+    def get_fundamentals(
+        self,
+        symbol: str,
+        force_refresh: bool = False,
+        validate: bool = True,
+        strict: bool = False,
+        required_fields: Optional[List[str]] = None,
+    ) -> Dict:
         """
         Get fundamental data for a symbol.
         
@@ -434,14 +497,64 @@ class DataManager:
             # Load from database
             data = self._load_fundamentals_from_db(symbol)
             if data:
-                return data
+                return self._with_fundamentals_validation(
+                    data,
+                    validate=validate,
+                    strict=strict,
+                    required_fields=required_fields,
+                )
         
         # Fetch from API
         data = self._fetch_fundamentals_from_api(symbol)
         if data:
             self._save_fundamentals_to_db(symbol, data)
-        
-        return data or {}
+        return self._with_fundamentals_validation(
+            data or {},
+            validate=validate,
+            strict=strict,
+            required_fields=required_fields,
+        )
+
+    def _with_fundamentals_validation(
+        self,
+        data: Dict,
+        validate: bool = True,
+        strict: bool = False,
+        required_fields: Optional[List[str]] = None,
+    ) -> Dict:
+        out = dict(data or {})
+        if not validate:
+            return out
+        validation = self.validate_fundamentals_payload(out, required_fields=required_fields)
+        out["_validation"] = validation
+        if strict and not validation["is_valid"]:
+            return {}
+        return out
+
+    def validate_fundamentals_payload(
+        self,
+        data: Dict,
+        required_fields: Optional[List[str]] = None,
+    ) -> Dict:
+        """
+        Validate a fundamentals payload before serving it to downstream callers.
+        """
+        fields = required_fields or ["revenue_growth", "earnings_growth", "profit_margin"]
+
+        def _missing(v) -> bool:
+            return v is None or (isinstance(v, float) and np.isnan(v))
+
+        missing_fields = [f for f in fields if _missing(data.get(f))]
+        zero_fields = [f for f in fields if data.get(f) in (0, 0.0)]
+        # If every required field is either missing or zero, treat payload as empty/unusable.
+        is_empty_payload = len(set(missing_fields).union(zero_fields)) == len(fields)
+        return {
+            "is_valid": not is_empty_payload,
+            "is_empty_payload": is_empty_payload,
+            "missing_fields": missing_fields,
+            "zero_fields": zero_fields,
+            "required_fields": fields,
+        }
     
     def _needs_fundamentals_refresh(self, symbol: str) -> bool:
         """Check if fundamentals need refresh."""
@@ -465,33 +578,75 @@ class DataManager:
         return datetime.now() - last_updated > self.max_fundamental_age
     
     def _fetch_fundamentals_from_api(self, symbol: str) -> Optional[Dict]:
-        """Fetch fundamentals from Yahoo Finance API."""
+        """Fetch fundamentals from provider stack (FinancialDatasets/FMP/Yahoo)."""
         try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.info
-            
-            return {
-                'symbol': symbol,
-                'name': info.get('shortName', symbol),
-                'sector': info.get('sector', 'Unknown'),
-                'industry': info.get('industry', 'Unknown'),
-                'market_cap': info.get('marketCap', 0),
-                'beta': info.get('beta', 1.0),
-                'pe_ratio': info.get('trailingPE', 0),
-                'forward_pe': info.get('forwardPE', 0),
-                'dividend_yield': info.get('dividendYield', 0),
-                'profit_margin': info.get('profitMargins', 0),
-                'revenue_growth': info.get('revenueGrowth', 0),
-                'earnings_growth': info.get('earningsGrowth', 0),
-                'fifty_two_week_high': info.get('fiftyTwoWeekHigh', 0),
-                'fifty_two_week_low': info.get('fiftyTwoWeekLow', 0),
-                'avg_volume': info.get('averageVolume', 0),
-                'shares_outstanding': info.get('sharesOutstanding', 0)
-            }
+            return self.fundamental_provider.get_company_profile(symbol)
             
         except Exception as e:
             print(f"   ⚠️ Fundamentals API error for {symbol}: {e}")
             return None
+
+    def get_quarterly_fundamentals(self, symbol: str, force_refresh: bool = False) -> pd.DataFrame:
+        """
+        Return canonical quarterly fundamentals and persist to parquet.
+        """
+        symbol = symbol.upper()
+        if not force_refresh:
+            cached = self.parquet_store.load_quarterly_fundamentals(symbol)
+            if cached is not None and not cached.empty:
+                return validate_quarterly_fundamentals(cached)
+
+        data = self.fundamental_provider.get_quarterly_fundamentals(symbol)
+        if data is None or data.empty:
+            return pd.DataFrame(columns=["ticker", "report_date", "disclosure_date", "eps", "revenue", "roe", "gross_margin"])
+
+        validated = validate_quarterly_fundamentals(data)
+        self.parquet_store.save_quarterly_fundamentals(symbol, validated)
+        # Optional MySQL sink for historical fundamentals
+        if self.mysql_store.enabled():
+            self.mysql_store.write_quarterly_fundamentals(validated)
+        return validated
+
+    def get_analyst_estimates(self, symbol: str) -> pd.DataFrame:
+        """Fetch analyst estimates from provider stack."""
+        data = self.fundamental_provider.get_analyst_estimates(symbol.upper())
+        if data is None:
+            return pd.DataFrame(columns=["ticker", "report_date", "estimated_eps", "estimated_revenue", "source"])
+        return data
+
+    def get_earnings_calendar(self, symbol: str) -> pd.DataFrame:
+        """Fetch earnings dates used for disclosure alignment checks."""
+        data = self.fundamental_provider.get_earnings_calendar(symbol.upper())
+        if data is None:
+            return pd.DataFrame(columns=["ticker", "report_date", "disclosure_date", "source"])
+        return data
+
+    def build_aligned_daily_with_fundamentals(
+        self,
+        symbol: str,
+        period: str = "2y",
+        force_refresh: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Create no-leakage daily dataset where quarterly fundamentals become visible
+        only after disclosure_date.
+        """
+        daily = self.get_daily_data(symbol, period=period, force_refresh=force_refresh)
+        if daily is None or daily.empty:
+            return pd.DataFrame()
+        price = daily.reset_index().rename(
+            columns={
+                "Date": "date",
+                "Open": "open",
+                "High": "high",
+                "Low": "low",
+                "Close": "close",
+                "Volume": "volume",
+            }
+        )
+        price["adj_close"] = price["close"]
+        fund = self.get_quarterly_fundamentals(symbol, force_refresh=force_refresh)
+        return align_fundamentals_to_daily(price, fund, ticker=symbol.upper())
     
     def _save_fundamentals_to_db(self, symbol: str, data: Dict):
         """Save fundamentals to database."""
@@ -502,27 +657,31 @@ class DataManager:
             cursor.execute("""
                 INSERT OR REPLACE INTO stock_fundamentals 
                 (symbol, name, sector, industry, market_cap, beta, pe_ratio,
-                 forward_pe, dividend_yield, profit_margin, revenue_growth,
-                 earnings_growth, fifty_two_week_high, fifty_two_week_low,
-                 avg_volume, shares_outstanding, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 forward_pe, dividend_yield, profit_margin, gross_margin,
+                 revenue_growth, earnings_growth, roe, debt_to_equity,
+                 fifty_two_week_high, fifty_two_week_low, avg_volume,
+                 shares_outstanding, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                data['symbol'],
-                data['name'],
-                data['sector'],
-                data['industry'],
-                data['market_cap'],
-                data['beta'],
-                data['pe_ratio'],
-                data['forward_pe'],
-                data['dividend_yield'],
-                data['profit_margin'],
-                data['revenue_growth'],
-                data['earnings_growth'],
-                data['fifty_two_week_high'],
-                data['fifty_two_week_low'],
-                data['avg_volume'],
-                data['shares_outstanding'],
+                data.get('symbol'),
+                data.get('name'),
+                data.get('sector'),
+                data.get('industry'),
+                data.get('market_cap'),
+                data.get('beta'),
+                data.get('pe_ratio'),
+                data.get('forward_pe'),
+                data.get('dividend_yield'),
+                data.get('profit_margin'),
+                data.get('gross_margin'),
+                data.get('revenue_growth'),
+                data.get('earnings_growth'),
+                data.get('roe'),
+                data.get('debt_to_equity'),
+                data.get('fifty_two_week_high'),
+                data.get('fifty_two_week_low'),
+                data.get('avg_volume'),
+                data.get('shares_outstanding'),
                 datetime.now().isoformat()
             ))
             
@@ -555,8 +714,9 @@ class DataManager:
         
         columns = ['symbol', 'name', 'sector', 'industry', 'market_cap', 'beta',
                    'pe_ratio', 'forward_pe', 'dividend_yield', 'profit_margin',
-                   'revenue_growth', 'earnings_growth', 'fifty_two_week_high',
-                   'fifty_two_week_low', 'avg_volume', 'shares_outstanding', 'last_updated']
+                   'gross_margin', 'revenue_growth', 'earnings_growth', 'roe',
+                   'debt_to_equity', 'fifty_two_week_high', 'fifty_two_week_low',
+                   'avg_volume', 'shares_outstanding', 'last_updated']
         
         return dict(zip(columns, result))
     
@@ -610,6 +770,87 @@ class DataManager:
         
         print(f"   ✅ Loaded {len(results)} symbols")
         return results
+
+    def load_cached_prices(
+        self,
+        symbols: List[str],
+        period: str = "1y",
+        min_bars: int = 60,
+        progress_hook: Optional[Callable[[int, int, int], None]] = None,
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Load cached daily bars from the DB only (no API calls).
+
+        We skip symbols that are stale or lack sufficient history so the caller can
+        re-fetch them in a bulk API stage.
+        """
+        out: Dict[str, pd.DataFrame] = {}
+        total = len(symbols)
+        for idx, symbol in enumerate(symbols, 1):
+            try:
+                symbol_u = str(symbol).upper()
+
+                # If stale or insufficient coverage, skip so caller can refresh in bulk.
+                if self._needs_daily_refresh(symbol_u) or self._needs_daily_coverage(symbol_u, period):
+                    if progress_hook:
+                        progress_hook(idx, total, len(out))
+                    continue
+
+                data = self._load_daily_from_db(symbol_u, period)
+                if data is None or data.empty or len(data) < min_bars:
+                    if progress_hook:
+                        progress_hook(idx, total, len(out))
+                    continue
+
+                if isinstance(data.index, pd.DatetimeIndex):
+                    frame = data.reset_index().rename(
+                        columns={
+                            data.index.name or "index": "Date",
+                            "Open": "Open",
+                            "High": "High",
+                            "Low": "Low",
+                            "Close": "Close",
+                            "Volume": "Volume",
+                        }
+                    )
+                else:
+                    frame = data.copy()
+
+                if "Date" in frame.columns:
+                    frame["Date"] = pd.to_datetime(frame["Date"]).dt.date
+                out[symbol_u] = frame
+            except Exception:
+                continue
+            finally:
+                if progress_hook:
+                    progress_hook(idx, total, len(out))
+        return out
+
+    def persist_prices(
+        self,
+        prices: Dict[str, pd.DataFrame],
+        progress_hook: Optional[Callable[[int, int], None]] = None,
+    ) -> None:
+        """
+        Persist a symbol->daily bars mapping into the canonical SQLite cache.
+        """
+        total = len(prices)
+        for idx, (symbol, data) in enumerate(prices.items(), 1):
+            if data is None or data.empty:
+                if progress_hook:
+                    progress_hook(idx, total)
+                continue
+            cols = [c for c in ["Date", "Open", "High", "Low", "Close", "Volume"] if c in data.columns]
+            if len(cols) < 6:
+                if progress_hook:
+                    progress_hook(idx, total)
+                continue
+            try:
+                self._save_daily_to_db(str(symbol).upper(), data[cols])
+            except Exception:
+                pass
+            if progress_hook:
+                progress_hook(idx, total)
     
     def get_cache_stats(self) -> Dict:
         """Get database statistics."""
@@ -637,6 +878,53 @@ class DataManager:
             'daily_records': daily_records,
             'fundamental_records': fundamental_records,
             'database_size_mb': db_size / (1024 * 1024) if db_size else 0
+        }
+
+    def validate_quarterly_fundamentals_coverage(
+        self,
+        symbols: List[str],
+        progress_hook: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict:
+        """
+        Validate cached quarterly fundamentals coverage from parquet store.
+
+        Returns aggregate counters and per-field non-null counts for the latest row per symbol.
+        """
+        total = len(symbols)
+        symbols_with_data = 0
+        latest_rows = []
+
+        for idx, symbol in enumerate(symbols, 1):
+            sym = str(symbol).upper()
+            try:
+                q = self.parquet_store.load_quarterly_fundamentals(sym)
+                if q is None or q.empty:
+                    if progress_hook:
+                        progress_hook(idx, total)
+                    continue
+                symbols_with_data += 1
+                q_sorted = q.sort_values("report_date")
+                latest_rows.append(q_sorted.iloc[-1].to_dict())
+            except Exception:
+                pass
+            finally:
+                if progress_hook:
+                    progress_hook(idx, total)
+
+        latest_df = pd.DataFrame(latest_rows)
+        fields = ["eps", "revenue", "roe", "gross_margin"]
+        non_null = {}
+        for col in fields:
+            if col in latest_df.columns:
+                non_null[col] = int(pd.to_numeric(latest_df[col], errors="coerce").notna().sum())
+            else:
+                non_null[col] = 0
+
+        return {
+            "symbols_total": total,
+            "symbols_with_quarterly_data": symbols_with_data,
+            "latest_rows_count": len(latest_rows),
+            "non_null_latest": non_null,
         }
     
     def clear_cache(self, symbol: Optional[str] = None):
@@ -679,6 +967,10 @@ def main():
     parser.add_argument("--preload", nargs="+", help="Preload symbols")
     parser.add_argument("--clear", nargs="?", const="ALL", help="Clear cache (symbol or ALL)")
     parser.add_argument("--test", type=str, help="Test loading a symbol")
+    parser.add_argument("--backfill-quarterly", action="store_true", help="Backfill quarterly fundamentals to parquet")
+    parser.add_argument("--validate-quarterly", action="store_true", help="Validate quarterly fundamentals coverage")
+    parser.add_argument("--symbols-file", type=str, help="File with one ticker per line (optional)")
+    parser.add_argument("--max-symbols", type=int, default=0, help="Max symbols to backfill (0 = all)")
     
     args = parser.parse_args()
     
@@ -691,6 +983,56 @@ def main():
         print(f"   Total daily records: {stats['daily_records']:,}")
         print(f"   Fundamental records: {stats['fundamental_records']}")
         print(f"   Database size: {stats['database_size_mb']:.2f} MB")
+        return
+
+    if args.backfill_quarterly:
+        if args.symbols_file:
+            with open(args.symbols_file, "r", encoding="utf-8") as fh:
+                symbols = [line.strip().split(",")[0].upper() for line in fh if line.strip()]
+        else:
+            from src.universe.listed_symbols import load_all_listed_us_symbols
+            symbols = load_all_listed_us_symbols()
+        if args.max_symbols > 0:
+            symbols = symbols[: args.max_symbols]
+
+        print(f"📦 Backfilling quarterly fundamentals for {len(symbols)} symbols")
+        if dm.mysql_store.enabled():
+            print("🧰 MySQL sink enabled via MYSQL_URL")
+        else:
+            print("🧰 MySQL sink disabled (set MYSQL_URL to enable)")
+        for idx, sym in enumerate(symbols, 1):
+            dm.get_quarterly_fundamentals(sym, force_refresh=True)
+            if idx % 50 == 0 or idx == len(symbols):
+                print(f"  {idx}/{len(symbols)}")
+        return
+
+    if args.validate_quarterly:
+        if args.symbols_file:
+            with open(args.symbols_file, "r", encoding="utf-8") as fh:
+                symbols = [line.strip().split(",")[0].upper() for line in fh if line.strip()]
+        else:
+            from src.universe.listed_symbols import load_all_listed_us_symbols
+            symbols = load_all_listed_us_symbols()
+        if args.max_symbols > 0:
+            symbols = symbols[: args.max_symbols]
+
+        print(f"🔎 Validating quarterly fundamentals for {len(symbols)} symbols")
+        stats = dm.validate_quarterly_fundamentals_coverage(
+            symbols,
+            progress_hook=lambda i, total: (
+                print(f"  {i}/{total}") if (i % 250 == 0 or i == total) else None
+            ),
+        )
+        print("\n=== QUARTERLY FUNDAMENTALS COVERAGE ===")
+        print(f"Symbols total: {stats['symbols_total']}")
+        print(f"Symbols with quarterly data: {stats['symbols_with_quarterly_data']}")
+        print(f"Latest rows counted: {stats['latest_rows_count']}")
+        nn = stats["non_null_latest"]
+        print(f"latest eps non-null: {nn['eps']}/{stats['latest_rows_count']}")
+        print(f"latest revenue non-null: {nn['revenue']}/{stats['latest_rows_count']}")
+        print(f"latest roe non-null: {nn['roe']}/{stats['latest_rows_count']}")
+        print(f"latest gross_margin non-null: {nn['gross_margin']}/{stats['latest_rows_count']}")
+        return
     
     elif args.preload:
         dm.preload_symbols(args.preload)

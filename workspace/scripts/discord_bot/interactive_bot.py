@@ -36,6 +36,7 @@ import logging
 import discord
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 # Core analysis (LLM + yfinance)
 sys.path.append(os.path.join(os.path.dirname(__file__), '../core_analysis'))
@@ -67,6 +68,19 @@ GOKU_CHANNELS = ["1277321989874385029", "1411717415565393970", "1227315745352847
 WILSON_CHANNELS = ["1211549165629476924"]
 ALL_SIGNAL_CHANNELS = set(GOKU_CHANNELS + WILSON_CHANNELS)
 
+SCHEDULER_TZ_NAME = os.environ.get("SCHEDULER_TZ", "America/Los_Angeles")
+SCHEDULER_TZ = ZoneInfo(SCHEDULER_TZ_NAME)
+
+# Daily automation windows in Pacific time (PST/PDT via zoneinfo)
+MORNING_PIPELINE_TIME = (7, 0)
+MIDDAY_REVIEW_TIME = (12, 0)
+LEARNING_CYCLE_TIME = (14, 45)
+NIGHTLY_REVIEW_TIME = (15, 15)
+AUTO_EXECUTION_TIME = (6, 35)  # 9:35 AM ET
+
+# Timeouts (seconds)
+PIPELINE_TIMEOUT_SECONDS = int(os.environ.get("PIPELINE_TIMEOUT_SECONDS", "1200"))
+
 # ---------------------------------------------------------------------------
 # Bot setup
 # ---------------------------------------------------------------------------
@@ -74,6 +88,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+_tasks_started = False
 
 
 # ===================================================================
@@ -459,6 +474,91 @@ async def _safe_send(channel, text):
     await channel.send(text)
 
 
+def _now_local():
+    """Current scheduler time in configured timezone."""
+    return datetime.now(timezone.utc).astimezone(SCHEDULER_TZ)
+
+
+def _is_due_today(last_run_date: str, hour: int, minute: int):
+    """
+    Return (should_run, today_key, local_now). A job is due once per weekday
+    after its scheduled local time.
+    """
+    local_now = _now_local()
+    if local_now.weekday() >= 5:
+        return False, last_run_date, local_now
+
+    today_key = local_now.date().isoformat()
+    if last_run_date == today_key:
+        return False, last_run_date, local_now
+
+    if (local_now.hour, local_now.minute) < (hour, minute):
+        return False, last_run_date, local_now
+
+    return True, today_key, local_now
+
+
+async def _get_digest_channel():
+    """
+    Resolve digest channel reliably. fetch_channel() is used as fallback when
+    get_channel() cache is not populated.
+    """
+    channel = bot.get_channel(DIGEST_CHANNEL_ID)
+    if channel is not None:
+        return channel
+
+    try:
+        channel = await bot.fetch_channel(DIGEST_CHANNEL_ID)
+        return channel
+    except Exception as e:
+        log.error(f"Cannot resolve digest channel {DIGEST_CHANNEL_ID}: {e}")
+        return None
+
+
+async def _send_daily_portfolio_status(channel, label: str = "Daily Portfolio Status"):
+    """Send a compact portfolio status snapshot to Discord."""
+    now_local = _now_local().strftime("%Y-%m-%d %H:%M %Z")
+    positions_resp = await trade_executor.call_api("/api/positions")
+
+    if isinstance(positions_resp, dict) and positions_resp.get("error"):
+        await _safe_send(channel, f"⚠️ *{label}* ({now_local}) — could not fetch positions: {positions_resp['error']}")
+        return
+
+    positions = positions_resp if isinstance(positions_resp, list) else []
+    if not positions:
+        await _safe_send(channel, f"📭 *{label}* ({now_local}) — no open positions.")
+        return
+
+    acct = await trade_executor.call_api("/api/account")
+    net_liq = acct.get("net_liquidation", 0) if isinstance(acct, dict) else 0
+
+    lines = [f"*{label}* ({now_local})"]
+    if net_liq:
+        lines.append(f"💼 Net Liq: ${net_liq:,.0f}")
+
+    total_pnl = 0.0
+    for p in positions[:12]:
+        symbol = p.get("symbol", "?")
+        qty = p.get("quantity", 0)
+        avg = p.get("avg_cost", 0)
+        mkt = p.get("market_price", 0)
+        pnl = p.get("pnl", 0)
+        total_pnl += pnl
+
+        side = "LONG" if qty >= 0 else "SHORT"
+        pnl_icon = "🟢" if pnl >= 0 else "🔴"
+        pnl_pct = ((mkt / avg - 1) * 100) if avg > 0 and mkt > 0 else 0
+        lines.append(
+            f"{pnl_icon} *{symbol}* {side} {abs(qty):.0f} @ ${avg:.2f} → ${mkt:.2f} ({pnl_pct:+.1f}%)"
+        )
+
+    total_icon = "🟢" if total_pnl >= 0 else "🔴"
+    total_str = f"+${total_pnl:,.0f}" if total_pnl >= 0 else f"-${abs(total_pnl):,.0f}"
+    lines.append(f"{total_icon} *Total Unrealized P&L:* {total_str}")
+
+    await _safe_send(channel, "\n".join(lines))
+
+
 async def run_full_analysis(channel, ticker):
     """
     Run the full analysis pipeline for a ticker:
@@ -551,21 +651,32 @@ async def run_full_analysis(channel, ticker):
 
 @bot.event
 async def on_ready():
+    global _tasks_started
     log.info(f"Bot online: {bot.user} | Servers: {len(bot.guilds)}")
     log.info(f"Trade API: {trade_executor.TRADE_API_URL}")
+
+    if _tasks_started:
+        log.info("Scheduler tasks already active; skipping duplicate startup on reconnect")
+        return
+
+    _tasks_started = True
     asyncio.create_task(_check_server())
     # Backfill recent signals from Goku/Wilson channels on startup
     asyncio.create_task(_scrape_recent_signals())
     # Start periodic signal refresh (every 30 min during market hours)
     asyncio.create_task(_periodic_signal_refresh())
+    # Start morning pipeline scheduler (7:00 AM PT)
+    asyncio.create_task(_morning_pipeline_scheduler())
     # Start nightly pipeline scheduler
     asyncio.create_task(_nightly_pipeline_scheduler())
-    # Start daily learning cycle (after market close, before pipeline)
+    # Start daily learning cycle (2:45 PM PT, before nightly review)
     asyncio.create_task(_daily_learning_scheduler())
-    # Start auto-execution scheduler (9:35 AM ET)
+    # Start auto-execution scheduler (6:35 AM PT / 9:35 AM ET)
     asyncio.create_task(_auto_execute_scheduler())
-    # Start mid-day portfolio check (12:00 PM ET)
+    # Start mid-day portfolio check (12:00 PM PT)
     asyncio.create_task(_midday_check_scheduler())
+    # Send startup health report to Discord
+    asyncio.create_task(_send_startup_report())
 
 
 async def _check_server():
@@ -578,6 +689,48 @@ async def _check_server():
             log.warning("Trading Server reachable but IB Gateway disconnected")
     except Exception as e:
         log.warning(f"Cannot reach Trading Server: {e}")
+
+
+async def _send_startup_report():
+    """Send a startup health report to Discord so user knows the bot is alive."""
+    await asyncio.sleep(10)  # Wait for bot cache to populate
+    try:
+        channel = await _get_digest_channel()
+        if not channel:
+            log.error(f"STARTUP: Cannot resolve digest channel {DIGEST_CHANNEL_ID} — "
+                       "ALL scheduled reports will fail! Check DIGEST_CHANNEL_ID and bot guild membership.")
+            return
+
+        local_now = _now_local()
+        # Check trade API health
+        try:
+            health = await trade_executor.call_api("/api/health")
+            api_status = "✅ Connected" if health.get("connected") else "⚠️ Reachable but IB disconnected"
+            trading_mode = health.get("trading_mode", "unknown")
+        except Exception as e:
+            api_status = f"❌ Unreachable ({str(e)[:60]})"
+            trading_mode = "N/A"
+
+        guilds = ", ".join(g.name for g in bot.guilds[:5])
+        report = (
+            f"🚀 *Bot Online* — {local_now.strftime('%Y-%m-%d %H:%M %Z')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🤖 User: {bot.user}\n"
+            f"🌐 Servers: {guilds}\n"
+            f"📡 Trade API: {api_status} (mode: {trading_mode})\n"
+            f"🕐 Timezone: {SCHEDULER_TZ_NAME}\n"
+            f"\n*Scheduled Jobs (PST):*\n"
+            f"  ⏰ 6:35 AM — Auto-execute approved trades\n"
+            f"  ⏰ 7:00 AM — Morning signal pipeline\n"
+            f"  ⏰ 12:00 PM — Mid-day portfolio review\n"
+            f"  ⏰ 2:45 PM — Daily learning cycle\n"
+            f"  ⏰ 3:15 PM — Nightly market review\n"
+            f"\nAll jobs will report to this channel."
+        )
+        await _safe_send(channel, report)
+        log.info("Startup report sent to Discord")
+    except Exception as e:
+        log.exception(f"Failed to send startup report: {e}")
 
 
 # ===================================================================
@@ -684,23 +837,18 @@ async def _scrape_recent_signals():
 async def _periodic_signal_refresh():
     """
     Periodically refresh signal data from Goku/Wilson channels.
-    Runs every 30 minutes during US market hours (9:30 AM - 4:30 PM ET),
-    and once after market close (5:00 PM ET).
+    Runs every 30 minutes during market-session Pacific hours.
     """
     await asyncio.sleep(60)  # Wait 1 min after startup (backfill runs first)
 
     while True:
         try:
-            now = datetime.now(timezone.utc)
-            et_hour = (now.hour - 5) % 24  # Rough UTC to ET conversion
+            local_now = _now_local()
+            is_weekday = local_now.weekday() < 5
+            # Rough PT window for pre/open/close workflow.
+            in_refresh_window = 6 <= local_now.hour <= 17
 
-            # Market hours: ~14:30-21:30 UTC (9:30 AM - 4:30 PM ET)
-            # After-close: ~22:00 UTC (5:00 PM ET)
-            is_market_hours = 14 <= et_hour <= 21
-            is_after_close = et_hour == 22
-            is_weekday = now.weekday() < 5
-
-            if is_weekday and (is_market_hours or is_after_close):
+            if is_weekday and in_refresh_window:
                 log.info("Periodic signal refresh triggered")
                 await _scrape_recent_signals()
                 await asyncio.sleep(1800)  # 30 minutes
@@ -712,124 +860,210 @@ async def _periodic_signal_refresh():
 
 
 # Target channel for nightly digest (Rich or Die)
-DIGEST_CHANNEL_ID = 1345123472019423284
+DIGEST_CHANNEL_ID = int(os.environ.get("DIGEST_CHANNEL_ID", "1345123472019423284"))
+
+
+async def _morning_pipeline_scheduler():
+    """
+    Run morning signal pipeline at 7:00 AM Pacific to queue pre-market ideas.
+    """
+    await asyncio.sleep(90)
+    last_run_date = ""
+
+    while True:
+        try:
+            should_run, run_date, local_now = _is_due_today(last_run_date, *MORNING_PIPELINE_TIME)
+            if should_run:
+                last_run_date = run_date
+                log.info(f"Morning pipeline triggered ({local_now.strftime('%Y-%m-%d %H:%M %Z')})")
+                channel = await _get_digest_channel()
+                if channel:
+                    try:
+                        await asyncio.wait_for(
+                            _run_and_send_pipeline(channel=channel, run_label="Morning Pipeline"),
+                            timeout=PIPELINE_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        mins = max(1, PIPELINE_TIMEOUT_SECONDS // 60)
+                        await _safe_send(channel, f"⚠️ Morning Pipeline timed out after {mins} minutes.")
+                        log.error("Morning pipeline timed out")
+                        await _send_discord_only_digest(channel, "Morning Pipeline", days=3, reason="scanner timeout")
+                else:
+                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
+            await asyncio.sleep(60)
+        except Exception as e:
+            log.exception(f"Morning pipeline scheduler error: {e}")
+            try:
+                ch = await _get_digest_channel()
+                if ch:
+                    await _safe_send(ch, f"⚠️ Morning Pipeline error: {str(e)[:200]}")
+            except Exception:
+                pass
+            await asyncio.sleep(60)
 
 
 async def _nightly_pipeline_scheduler():
     """
-    Run full pipeline nightly after market close (~5:15 PM ET / 22:15 UTC).
-    Sends digest to the Rich or Die channel automatically.
+    Run full pipeline daily at 3:15 PM Pacific and send portfolio status after review.
     """
     await asyncio.sleep(120)  # Wait 2 min after startup
+    last_run_date = ""
 
     while True:
         try:
-            now = datetime.now(timezone.utc)
-            et_hour = (now.hour - 5) % 24
-            et_minute = now.minute
-            is_weekday = now.weekday() < 5
-
-            # Trigger at ~5:15 PM ET (22:15 UTC) on weekdays
-            if is_weekday and et_hour == 17 and 14 <= et_minute <= 16:
-                log.info("Nightly pipeline triggered")
-                await _run_and_send_pipeline()
-                await asyncio.sleep(3600)  # Don't trigger again for 1 hour
-            else:
-                await asyncio.sleep(60)  # Check every minute
+            should_run, run_date, local_now = _is_due_today(last_run_date, *NIGHTLY_REVIEW_TIME)
+            if should_run:
+                last_run_date = run_date
+                log.info(f"Nightly market review triggered ({local_now.strftime('%Y-%m-%d %H:%M %Z')})")
+                channel = await _get_digest_channel()
+                if channel:
+                    try:
+                        await asyncio.wait_for(
+                            _run_and_send_pipeline(
+                                channel=channel,
+                                run_label="Nightly Market Review",
+                                send_portfolio_status=True,
+                            ),
+                            timeout=PIPELINE_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        mins = max(1, PIPELINE_TIMEOUT_SECONDS // 60)
+                        await _safe_send(channel, f"⚠️ Nightly Market Review timed out after {mins} minutes.")
+                        log.error("Nightly pipeline timed out")
+                        await _send_discord_only_digest(channel, "Nightly Market Review", days=3, reason="scanner timeout")
+                else:
+                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
+            await asyncio.sleep(60)
         except Exception as e:
-            log.warning(f"Nightly pipeline error: {e}")
-            await asyncio.sleep(600)
+            log.exception(f"Nightly pipeline scheduler error: {e}")
+            try:
+                ch = await _get_digest_channel()
+                if ch:
+                    await _safe_send(ch, f"⚠️ Nightly Market Review error: {str(e)[:200]}")
+            except Exception:
+                pass
+            await asyncio.sleep(60)
 
 
 async def _auto_execute_scheduler():
     """
-    Run auto-execution of approved trades at market open (~9:35 AM ET / 14:35 UTC).
+    Run auto-execution of approved trades at market open (6:35 AM Pacific / 9:35 AM ET).
     """
     await asyncio.sleep(130)
+    last_run_date = ""
 
     while True:
         try:
-            now = datetime.now(timezone.utc)
-            et_hour = (now.hour - 5) % 24
-            et_minute = now.minute
-            is_weekday = now.weekday() < 5
-
-            # Trigger at ~9:35 AM ET (14:35 UTC)
-            if is_weekday and et_hour == 9 and 34 <= et_minute <= 36:
-                log.info("Auto-execution triggered")
-                channel = bot.get_channel(DIGEST_CHANNEL_ID)
-                if channel:
-                    await auto_executor.execute_approved_trades(channel.send)
+            should_run, run_date, local_now = _is_due_today(last_run_date, *AUTO_EXECUTION_TIME)
+            if should_run:
+                last_run_date = run_date
+                log.info(f"Auto-execution triggered ({local_now.strftime('%Y-%m-%d %H:%M %Z')})")
+                channel = await _get_digest_channel()
+                send_fn = channel.send if channel else None
+                if channel is None:
+                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}; executing without Discord updates")
                 else:
-                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
-                await asyncio.sleep(3600)
-            else:
-                await asyncio.sleep(60)
+                    await _safe_send(channel, f"⏰ *Auto-Execution Check* — {local_now.strftime('%H:%M %Z')}")
+                await auto_executor.execute_approved_trades(send_fn)
+            await asyncio.sleep(60)
         except Exception as e:
             log.exception(f"Auto-execute scheduler error: {e}")
+            try:
+                ch = await _get_digest_channel()
+                if ch:
+                    await _safe_send(ch, f"⚠️ Auto-execute error: {str(e)[:200]}")
+            except Exception:
+                pass
             await asyncio.sleep(60)
 
 
 async def _midday_check_scheduler():
     """
-    Run portfolio check at noon (~12:00 PM ET / 17:00 UTC).
+    Run portfolio check at noon Pacific.
     """
     await asyncio.sleep(140)
+    last_run_date = ""
 
     while True:
         try:
-            now = datetime.now(timezone.utc)
-            et_hour = (now.hour - 5) % 24
-            et_minute = now.minute
-            is_weekday = now.weekday() < 5
-
-            # Trigger at ~12:00 PM ET (17:00 UTC)
-            if is_weekday and et_hour == 12 and 0 <= et_minute <= 2:
-                log.info("Mid-day portfolio check triggered")
-                channel = bot.get_channel(DIGEST_CHANNEL_ID)
+            should_run, run_date, local_now = _is_due_today(last_run_date, *MIDDAY_REVIEW_TIME)
+            if should_run:
+                last_run_date = run_date
+                log.info(f"Midday portfolio review triggered ({local_now.strftime('%Y-%m-%d %H:%M %Z')})")
+                channel = await _get_digest_channel()
                 if channel:
-                    await portfolio_manager.run_midday_check(channel.send)
+                    try:
+                        await asyncio.wait_for(
+                            portfolio_manager.run_midday_check(channel.send),
+                            timeout=120,  # 2 minute hard cap
+                        )
+                    except asyncio.TimeoutError:
+                        await _safe_send(channel, "⚠️ Mid-day portfolio check timed out after 2 minutes.")
+                        log.error("Midday check timed out")
                 else:
                     log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
-                await asyncio.sleep(3600)
-            else:
-                await asyncio.sleep(60)
+            await asyncio.sleep(60)
         except Exception as e:
             log.exception(f"Mid-day check scheduler error: {e}")
+            try:
+                ch = await _get_digest_channel()
+                if ch:
+                    await _safe_send(ch, f"⚠️ Mid-day check error: {str(e)[:200]}")
+            except Exception:
+                pass
             await asyncio.sleep(60)
 
 
 async def _daily_learning_scheduler():
     """
-    Run learning cycle daily at ~4:45 PM ET (before nightly pipeline at 5:15 PM).
+    Run learning cycle daily at 2:45 PM Pacific (before nightly review).
     Tracks signal outcomes, grades traders, processes chart images.
+    Sends summary report to Discord digest channel.
     """
     await asyncio.sleep(180)  # Wait 3 min after startup
+    last_run_date = ""
 
     while True:
         try:
-            now = datetime.now(timezone.utc)
-            et_hour = (now.hour - 5) % 24
-            et_minute = now.minute
-            is_weekday = now.weekday() < 5
-
-            # Trigger at ~4:45 PM ET on weekdays (before pipeline at 5:15 PM)
-            if is_weekday and et_hour == 16 and 44 <= et_minute <= 46:
-                log.info("Daily learning cycle triggered")
+            should_run, run_date, local_now = _is_due_today(last_run_date, *LEARNING_CYCLE_TIME)
+            if should_run:
+                last_run_date = run_date
+                log.info(f"Daily learning cycle triggered ({local_now.strftime('%Y-%m-%d %H:%M %Z')})")
+                channel = await _get_digest_channel()
+                if channel:
+                    await _safe_send(channel, f"🧠 *Daily Learning Cycle* starting at {local_now.strftime('%H:%M %Z')}...")
                 minimax_key = os.environ.get("MINIMAX_API_KEY", "")
-                summary = await signal_tracker.run_daily_learning_cycle(
-                    DATA_FILE, api_key=minimax_key
-                )
+                try:
+                    summary = await asyncio.wait_for(
+                        signal_tracker.run_daily_learning_cycle(
+                            DATA_FILE, api_key=minimax_key
+                        ),
+                        timeout=120,  # 2 minute hard cap
+                    )
+                except asyncio.TimeoutError:
+                    summary = "⚠️ Learning cycle timed out after 2 minutes."
                 log.info(f"Learning cycle complete:\n{summary}")
-                await asyncio.sleep(3600)  # Don't run again for 1 hour
-            else:
-                await asyncio.sleep(60)
+                # Send summary to Discord
+                if channel and summary:
+                    # Truncate if needed for Discord limit
+                    report = f"🧠 *Daily Learning Cycle Complete*\n```\n{summary[:1700]}\n```"
+                    await _safe_send(channel, report)
+                elif not channel:
+                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID} for learning report")
+            await asyncio.sleep(60)
         except Exception as e:
             log.warning(f"Learning cycle error: {e}")
-            await asyncio.sleep(600)
+            # Try to report error to Discord
+            try:
+                ch = await _get_digest_channel()
+                if ch:
+                    await _safe_send(ch, f"⚠️ Learning cycle error: {str(e)[:200]}")
+            except Exception:
+                pass
+            await asyncio.sleep(60)
 
 
-async def _run_and_send_pipeline(channel=None):
+async def _run_and_send_pipeline(channel=None, run_label="Signal Pipeline", send_portfolio_status=False):
     """Run the full signal pipeline and send results to Discord."""
     try:
         # Refresh signals first
@@ -846,11 +1080,14 @@ async def _run_and_send_pipeline(channel=None):
 
         # Find the channel to send to
         if channel is None:
-            channel = bot.get_channel(DIGEST_CHANNEL_ID)
+            channel = await _get_digest_channel()
 
         if channel is None:
-            log.warning("Could not find digest channel")
+            log.warning("Could not find digest channel; pipeline will run without Discord output")
             return candidates
+
+        run_time = _now_local().strftime("%Y-%m-%d %H:%M %Z")
+        await _safe_send(channel, f"🤖 *{run_label}* triggered at {run_time}")
 
         # Send each digest message
         for msg in digest_messages:
@@ -867,7 +1104,8 @@ async def _run_and_send_pipeline(channel=None):
                         params = signal_pipeline.generate_order_params(c, "limit")
                         result = await trade_executor.call_api("/api/trade", method="POST", payload=params)
                         status = "✅" if result.get("success") else "⚠️"
-                        await _safe_send(channel, f"{status} Auto-trade: ${c.ticker} {params['order_type']} @ ${params.get('price', 'MKT')}")
+                        price = params.get("limit_price", "MKT")
+                        await _safe_send(channel, f"{status} Auto-trade: ${c.ticker} {params['order_type']} @ ${price}")
                         signal_pipeline.save_approved(c.ticker, params)
                         await asyncio.sleep(1)
                     except Exception as e:
@@ -875,7 +1113,10 @@ async def _run_and_send_pipeline(channel=None):
         except Exception as e:
             log.warning(f"Auto-trade check failed: {e}")
 
-        log.info(f"Nightly digest sent: {len(candidates)} candidates, {len(digest_messages)} messages")
+        if send_portfolio_status:
+            await _send_daily_portfolio_status(channel, label="Post-Review Portfolio Status")
+
+        log.info(f"{run_label} sent: {len(candidates)} candidates, {len(digest_messages)} messages")
         return candidates
 
     except Exception as e:
@@ -883,6 +1124,36 @@ async def _run_and_send_pipeline(channel=None):
         if channel:
             await _safe_send(channel, f"❌ Pipeline error: {str(e)[:200]}")
         return []
+
+
+async def _send_discord_only_digest(channel, run_label: str, days: int = 3, reason: str = ""):
+    """Send a Discord-only digest when scanner times out or is unavailable."""
+    if channel is None:
+        return
+    try:
+        header = f"⚠️ *{run_label}* scanner timed out; sending Discord-only digest."
+        if reason:
+            header += f" ({reason})"
+        await _safe_send(channel, header)
+
+        discord_signals = await signal_pipeline.collect_discord_signals(DATA_FILE, days=days)
+        candidates = signal_pipeline.build_candidates(discord_signals, {})
+        digest_messages = signal_pipeline.format_nightly_digest(candidates)
+
+        for msg in digest_messages:
+            await _safe_send(channel, msg)
+            await asyncio.sleep(1)
+
+        await _safe_send(
+            channel,
+            f"✅ *{run_label}* Discord-only digest complete — {len(candidates)} candidates analyzed.",
+        )
+    except Exception as e:
+        log.warning(f"Discord-only digest failed: {e}")
+        try:
+            await _safe_send(channel, f"❌ *{run_label}* fallback digest failed: {str(e)[:200]}")
+        except Exception:
+            pass
 
 
 @bot.event
@@ -1344,10 +1615,11 @@ async def cmd_pipeline(ctx):
                         result = await trade_executor.call_api("/api/trade", method="POST", payload=params)
                         status = "✅" if result.get("success") else "⚠️"
                         msg = result.get("message", result.get("error", "sent"))
+                        lp = params.get("limit_price", "MKT")
                         await _safe_send(
                             ctx,
-                            f"{status} ${c.ticker}: {params['order_type']} @ ${params.get('price', 'MKT')} | "
-                            f"Stop ${params.get('stop_loss')} | Target ${params.get('take_profit')} — {msg}"
+                            f"{status} ${c.ticker}: {params['order_type']} @ ${lp} | "
+                            f"Stop ${params.get('stop_loss')} | Target ${params.get('target')} — {msg}"
                         )
                         signal_pipeline.save_approved(c.ticker, params)
                         await asyncio.sleep(1)
@@ -1545,7 +1817,7 @@ HELP_TEXT = (
     "📋 **Info:**\n"
     "• `!positions` — Positions with P&L\n"
     "• `!orders` — Open orders\n"
-    "\n*Auto: Learning 4:45 PM | Pipeline 5:15 PM ET*"
+    "\n*Auto (PT): Morning 7:00 | Midday 12:00 | Learning 2:45 | Review 3:15 | Open Exec 6:35*"
 )
 
 

@@ -1,0 +1,36 @@
+profiles:
+  fundamental_long:
+    entry_strategies: ["TREND_ENTRY", "PULLBACK_ENTRY"]
+    exit_strategies: ["TRAILING_STOP", "TIME_EXIT"]
+    position_policy:
+      max_position_pct: 0.10
+      stop_band_pct: 0.08
+      max_hold_days: 120
+
+  swing_momentum:
+    entry_strategies: ["VOLUME_PULLBACK", "BREAKOUT_ENTRY", "TREND_ENTRY"]
+    exit_strategies: ["HARD_STOP", "TRAILING_STOP", "PROFIT_TARGET"]
+    position_policy:
+      max_position_pct: 0.10
+      stop_band_pct: 0.07
+      max_hold_days: 25
+
+  blended:
+    entry_strategies: ["VOLUME_PULLBACK", "TREND_ENTRY", "PULLBACK_ENTRY"]
+    exit_strategies: ["HARD_STOP", "TRAILING_STOP", "TIME_EXIT"]
+    position_policy:
+      max_position_pct: 0.10
+      stop_band_pct: 0.075
+      max_hold_days: 45
+
+routing:
+  tier_map:
+    A: "fundamental_long"
+    B: "swing_momentum"
+    C: "blended"
+  sector_map:
+    technology: "swing_momentum"
+    financial services: "fundamental_long"
+  ticker_map:
+    BRK-B: "fundamental_long"
+  default_profile: "blended"

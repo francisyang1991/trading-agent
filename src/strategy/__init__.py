@@ -21,6 +21,7 @@ from .ev_calculator import (
     estimate_distribution,
     calculate_risk_reward,
 )
+from .router import ConfigStrategyRouter, StrategyProfile
 
 __all__ = [
     "Strategy",
@@ -31,4 +32,6 @@ __all__ = [
     "calculate_kelly",
     "estimate_distribution",
     "calculate_risk_reward",
+    "ConfigStrategyRouter",
+    "StrategyProfile",
 ]

@@ -1,8 +1,7 @@
-"""
-Filter functions for stock universe.
-"""
+"""Filter functions for stock universe."""
 
 from typing import List, Optional
+import pandas as pd
 from .universe_manager import StockInfo, MarketCap
 
 
@@ -178,3 +177,152 @@ def filter_growing(
         s for s in stocks 
         if s.revenue_growth is not None and s.revenue_growth >= min_growth
     ]
+
+
+def technical_filter(
+    factor_df: pd.DataFrame,
+    rs_threshold: float = 80.0,
+    near_high_threshold: float = 0.85,
+) -> pd.DataFrame:
+    """
+    Technical layer:
+    - close above 200MA
+    - near 52-week high
+    - RS rank threshold
+    """
+    if factor_df is None or factor_df.empty:
+        return pd.DataFrame()
+    df = factor_df.copy()
+    required = {"adj_close", "rs_rank", "above_200ma", "near_52w"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"technical_filter missing columns: {sorted(missing)}")
+
+    if "near_52w" not in df.columns and {"adj_close", "high_52w"}.issubset(df.columns):
+        df["near_52w"] = df["adj_close"] >= (df["high_52w"] * near_high_threshold)
+
+    return df[
+        (df["above_200ma"].astype(bool))
+        & (df["near_52w"].astype(bool))
+        & (df["rs_rank"] >= rs_threshold)
+    ].copy()
+
+
+def fundamental_filter(
+    factor_df: pd.DataFrame,
+    min_eps_yoy: float = 0.25,
+    min_revenue_growth: float = 0.10,
+    min_revenue_acceleration: Optional[float] = None,
+    require_surprise_non_negative: bool = False,
+) -> pd.DataFrame:
+    """
+    Fundamental layer:
+    - EPS YoY growth
+    - revenue growth
+    - optional analyst surprise floor
+    """
+    if factor_df is None or factor_df.empty:
+        return pd.DataFrame()
+    df = factor_df.copy()
+    for col in ("eps_yoy", "revenue_growth"):
+        if col not in df.columns:
+            raise ValueError(f"fundamental_filter missing column: {col}")
+
+    out = df[(df["eps_yoy"] >= min_eps_yoy) & (df["revenue_growth"] >= min_revenue_growth)].copy()
+    if min_revenue_acceleration is not None:
+        if "revenue_acceleration" not in out.columns:
+            raise ValueError("fundamental_filter missing column: revenue_acceleration")
+        out = out[out["revenue_acceleration"] >= min_revenue_acceleration]
+    if require_surprise_non_negative and "earnings_surprise" in out.columns:
+        out = out[out["earnings_surprise"] >= 0]
+    return out
+
+
+def moat_quality_filter(
+    factor_df: pd.DataFrame,
+    min_roe: float = 0.10,
+    min_gm_rank: float = 60.0,
+    max_debt_to_equity: Optional[float] = None,
+) -> pd.DataFrame:
+    """
+    Moat/quality layer:
+    - ROE floor
+    - gross margin percentile floor
+    - optional debt ceiling
+    """
+    if factor_df is None or factor_df.empty:
+        return pd.DataFrame()
+    df = factor_df.copy()
+    for col in ("roe", "gm_rank"):
+        if col not in df.columns:
+            raise ValueError(f"moat_quality_filter missing column: {col}")
+    out = df[(df["roe"] >= min_roe) & (df["gm_rank"] >= min_gm_rank)].copy()
+    if max_debt_to_equity is not None and "debt_to_equity" in out.columns:
+        de = pd.to_numeric(out["debt_to_equity"], errors="coerce")
+        # Some providers report D/E as percent-like values (e.g., 16 means 0.16x).
+        de = de.where(de <= 5, de / 100.0)
+        out = out[de <= max_debt_to_equity]
+    return out
+
+
+def build_technical_base_from_prices(
+    prices_by_symbol: dict,
+    benchmark_return_252: float,
+    near_52w_ratio: float = 0.85,
+    min_bars: int = 260,
+    as_of_date: Optional["date"] = None,
+) -> pd.DataFrame:
+    """
+    Build base technical feature table from OHLCV dict.
+
+    Args:
+        prices_by_symbol: {ticker: DataFrame with Close column}
+        benchmark_return_252: SPY 252-day return for RS computation.
+        near_52w_ratio: fraction of 52w high to qualify as "near high".
+        min_bars: minimum price bars required.
+        as_of_date: if set, truncate each price series to this date
+                    (for historical lookback with no lookahead).
+    """
+    import datetime as _dt
+
+    rows = []
+    eval_date = as_of_date or pd.Timestamp.today().date()
+
+    for sym, d in prices_by_symbol.items():
+        try:
+            df = d.copy()
+            # Truncate to as_of_date if specified (no lookahead).
+            if as_of_date is not None:
+                if "Date" in df.columns:
+                    df = df[pd.to_datetime(df["Date"]).dt.date <= as_of_date]
+                elif isinstance(df.index, pd.DatetimeIndex):
+                    df = df[df.index.date <= as_of_date]
+
+            close = df["Close"]
+            if close is None or len(close) < min_bars:
+                continue
+            price = float(close.iloc[-1])
+            ma200 = float(close.rolling(200).mean().iloc[-1])
+            high_52w = float(close.rolling(252).max().iloc[-1])
+            if not pd.notna(ma200) or not pd.notna(high_52w) or high_52w <= 0:
+                continue
+            stock_ret_252 = float(close.iloc[-1] / close.iloc[-252] - 1)
+            rs_raw = stock_ret_252 - benchmark_return_252
+            rows.append(
+                {
+                    "ticker": sym,
+                    "date": eval_date,
+                    "adj_close": price,
+                    "above_200ma": price > ma200,
+                    "near_52w": price >= high_52w * near_52w_ratio,
+                    "rs_raw": rs_raw,
+                }
+            )
+        except Exception:
+            continue
+
+    base = pd.DataFrame(rows)
+    if base.empty:
+        return base
+    base["rs_rank"] = (base["rs_raw"].rank(pct=True) * 98 + 1).round(2)
+    return base

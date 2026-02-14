@@ -21,7 +21,11 @@ Use get_data_manager() factory to get the appropriate manager based on your use 
 
 from .ibkr_client import IBKRClient
 from .ibkr_web_client import IBKRWebClient, IBeamManager
-from .ibind_client import IBindRESTClient, IBindWebSocketClient
+try:
+    from .ibind_client import IBindRESTClient, IBindWebSocketClient
+except ImportError:
+    IBindRESTClient = None
+    IBindWebSocketClient = None
 from .ibkr_data_manager import DataManager as IBKRDataManager, BacktestDataManager
 
 # New async client and connection manager for 24/7 operation
