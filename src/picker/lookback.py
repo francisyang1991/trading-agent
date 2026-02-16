@@ -18,7 +18,6 @@ import pandas as pd
 from src.picker.fundamentals_service import FundamentalSnapshotService
 from src.universe.filters import (
     build_technical_base_from_prices,
-    fundamental_filter,
     moat_quality_filter,
     technical_filter,
 )
@@ -31,11 +30,12 @@ def run_picker_at_date(
     cfg: Dict[str, Any],
     as_of_date: date,
     progress_every: int = 50,
+    refresh_historical_cache: bool = False,
 ) -> pd.DataFrame:
     """
     Run the full three-layer picker using only data available at as_of_date.
-    No lookahead: prices are truncated, fundamentals use .info snapshot
-    (which is current, but quarterly data is filtered to pre-date).
+    No lookahead: prices are truncated and fundamentals are reconstructed from
+    quarterly data disclosed on/before as_of_date.
 
     Args:
         prices: full price dict (will be truncated internally).
@@ -52,6 +52,8 @@ def run_picker_at_date(
     fund_cfg = cfg.get("fundamental", {})
     qual_cfg = cfg.get("quality", {})
     score_cfg = cfg.get("scoring", {})
+    lb_cfg = cfg.get("lookback", {})
+    skip_missing_yoy = bool(lb_cfg.get("skip_missing_yoy_checks", False))
 
     # 1. Compute SPY benchmark return at as_of_date
     spy_trunc = _truncate(spy_df, as_of_date)
@@ -79,28 +81,26 @@ def run_picker_at_date(
 
     print(f"  [lookback {as_of_date}] base={len(base)} tech={len(tech)}")
 
-    # 3. Fundamental enrichment (uses current Yahoo .info snapshot — acceptable
-    #    since the lookback is for comparing which stocks pass technical filters,
-    #    and fundamentals don't change drastically quarter-to-quarter).
+    # 3. Fundamental enrichment using point-in-time quarterly snapshots.
     fund_df = fundamentals_service.load_for_tickers(
         tech["ticker"].tolist(),
         existing_snapshot_path=None,  # no cache for lookback runs
         progress_every=progress_every,
+        as_of_date=as_of_date,
+        use_persistent_cache=True,
+        refresh_persistent_cache=refresh_historical_cache,
     )
 
     merged = tech.merge(fund_df, on="ticker", how="left")
     merged["gm_rank"] = (
         pd.to_numeric(merged["gross_margin"], errors="coerce").rank(pct=True) * 100
     ).round(2)
-    merged = merged.dropna(subset=["eps_yoy", "revenue_growth", "roe", "gm_rank"])
 
     # 4. Fundamental + quality filters
-    fund = fundamental_filter(
+    fund = _filter_lookback_fundamentals(
         merged,
-        min_eps_yoy=fund_cfg.get("min_eps_yoy", 0.25),
-        min_revenue_growth=fund_cfg.get("min_revenue_growth", 0.10),
-        min_revenue_acceleration=fund_cfg.get("min_revenue_acceleration"),
-        require_surprise_non_negative=fund_cfg.get("require_surprise_non_negative", False),
+        fund_cfg=fund_cfg,
+        skip_missing_yoy_checks=skip_missing_yoy,
     )
     quality = moat_quality_filter(
         fund,
@@ -112,10 +112,12 @@ def run_picker_at_date(
     # 5. Score
     if not quality.empty:
         quality = quality.copy()
+        eps_for_score = pd.to_numeric(quality["eps_yoy"], errors="coerce").fillna(0.0)
+        rev_for_score = pd.to_numeric(quality["revenue_growth"], errors="coerce").fillna(0.0)
         quality["composite"] = (
             quality["rs_rank"] * score_cfg.get("rs_rank_weight", 0.35)
-            + (quality["eps_yoy"] * 100).clip(-100, 200) * score_cfg.get("eps_yoy_weight", 0.20)
-            + (quality["revenue_growth"] * 100).clip(-100, 200) * score_cfg.get("revenue_growth_weight", 0.20)
+            + (eps_for_score * 100).clip(-100, 200) * score_cfg.get("eps_yoy_weight", 0.20)
+            + (rev_for_score * 100).clip(-100, 200) * score_cfg.get("revenue_growth_weight", 0.20)
             + quality["gm_rank"] * score_cfg.get("gm_rank_weight", 0.15)
             + (quality["roe"] * 100).clip(-100, 100) * score_cfg.get("roe_weight", 0.10)
         )
@@ -124,6 +126,57 @@ def run_picker_at_date(
 
     print(f"  [lookback {as_of_date}] fundamental={len(fund)} quality={len(quality)}")
     return quality
+
+
+def _filter_lookback_fundamentals(
+    merged: pd.DataFrame,
+    fund_cfg: Dict[str, Any],
+    skip_missing_yoy_checks: bool = False,
+) -> pd.DataFrame:
+    """
+    Apply lookback fundamental filtering with optional missing-YoY bypass.
+
+    When skip_missing_yoy_checks is True, rows with missing EPS/Revenue growth
+    are not rejected solely for missing values; threshold checks apply only when
+    values are present.
+    """
+    if merged is None or merged.empty:
+        return pd.DataFrame()
+
+    df = merged.copy()
+    # Quality stage requires ROE + GM rank regardless of YoY policy.
+    df = df.dropna(subset=["roe", "gm_rank"])
+    if df.empty:
+        return df
+
+    min_eps = fund_cfg.get("min_eps_yoy", 0.25)
+    min_rev = fund_cfg.get("min_revenue_growth", 0.10)
+    min_acc = fund_cfg.get("min_revenue_acceleration")
+    require_surprise_non_negative = fund_cfg.get("require_surprise_non_negative", False)
+
+    eps = pd.to_numeric(df.get("eps_yoy"), errors="coerce")
+    rev = pd.to_numeric(df.get("revenue_growth"), errors="coerce")
+    mask = pd.Series(True, index=df.index)
+
+    if skip_missing_yoy_checks:
+        mask &= eps.isna() | (eps >= min_eps)
+        mask &= rev.isna() | (rev >= min_rev)
+    else:
+        mask &= eps.notna() & (eps >= min_eps)
+        mask &= rev.notna() & (rev >= min_rev)
+
+    if min_acc is not None:
+        acc = pd.to_numeric(df.get("revenue_acceleration"), errors="coerce")
+        if skip_missing_yoy_checks:
+            mask &= acc.isna() | (acc >= float(min_acc))
+        else:
+            mask &= acc.notna() & (acc >= float(min_acc))
+
+    if require_surprise_non_negative and "earnings_surprise" in df.columns:
+        surprise = pd.to_numeric(df["earnings_surprise"], errors="coerce")
+        mask &= surprise >= 0
+
+    return df[mask].copy()
 
 
 def compare_across_dates(

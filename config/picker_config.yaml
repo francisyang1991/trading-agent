@@ -11,6 +11,22 @@ data:
   yf_threads: false                 # Use threaded Yahoo download
   max_symbols: 0                    # 0 = all listed US stocks
 
+# --- Preflight cache quality gate (auto-run before picker) ---
+preflight:
+  enabled: true
+  strict: true                      # Pass/fail gate; non-zero check aborts picker
+  on_fail: "abort"                  # abort | warn
+  repair_invalid_first: true        # Auto purge invalid OHLCV rows before checks
+  include_quarterly: false          # Optional quarterly-cache coverage gate
+  min_quarterly_coverage_pct: 0.50
+  max_invalid_rows: 0
+  max_missing_pct: 0.02
+  min_fresh_pct: 0.98
+  min_minbars_pct: 0.80             # Listed universe includes new symbols; keep practical
+  max_stale_days: 7
+  # period_days/min_bars default from data.period/technical.min_bars
+  output: "results/picker/cache_health_preflight.json"
+
 # --- Technical filter (Layer 1) ---
 technical:
   rs_threshold: 80.0                # RS rank percentile floor
@@ -48,6 +64,8 @@ post_process:
 lookback:
   enabled: false                    # Set true to run lookback comparison
   months_back: [3, 6, 9]           # Run picker at these historical points
+  refresh_snapshot_cache: false     # Recompute historical snapshot cache files
+  skip_missing_yoy_checks: true     # Do not reject lookback rows only for missing YoY fields
 
 # --- IBKR fallback ---
 ibkr:

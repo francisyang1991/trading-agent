@@ -17,6 +17,35 @@ from .base import FundamentalDataProvider, MarketDataProvider
 class YFinanceProvider(MarketDataProvider, FundamentalDataProvider):
     """Provider backed by yfinance."""
 
+    @staticmethod
+    def _classify_earnings_session(ts: pd.Timestamp) -> tuple[str, str]:
+        """
+        Map an earnings timestamp to ET clock time and session bucket.
+        """
+        if ts is None or pd.isna(ts):
+            return "", "unknown"
+
+        t = pd.Timestamp(ts)
+        try:
+            if t.tzinfo is None:
+                t = t.tz_localize("America/New_York")
+            else:
+                t = t.tz_convert("America/New_York")
+        except Exception:
+            return "", "unknown"
+
+        hhmm = f"{int(t.hour):02d}:{int(t.minute):02d}"
+        minute_of_day = int(t.hour) * 60 + int(t.minute)
+
+        # 00:00 from some feeds often means date-only (unknown session).
+        if int(t.hour) == 0 and int(t.minute) == 0:
+            return hhmm, "unknown"
+        if minute_of_day < (9 * 60 + 30):
+            return hhmm, "pre-market"
+        if minute_of_day >= (16 * 60):
+            return hhmm, "post-market"
+        return hhmm, "in-market"
+
     def _normalize_ohlcv(self, raw: pd.DataFrame) -> Optional[pd.DataFrame]:
         if raw is None or raw.empty:
             return None
@@ -193,12 +222,16 @@ class YFinanceProvider(MarketDataProvider, FundamentalDataProvider):
 
         rows = []
         for idx in df.index:
-            d = pd.to_datetime(idx).date()
+            ts = pd.to_datetime(idx)
+            d = ts.date()
+            hhmm_et, session = self._classify_earnings_session(ts)
             rows.append(
                 {
                     "ticker": symbol.upper(),
                     "report_date": d,
                     "disclosure_date": d,
+                    "release_time_et": hhmm_et,
+                    "release_session": session,
                     "source": "yfinance",
                 }
             )

@@ -54,6 +54,7 @@ results/
 config/settings.local.yaml
 .env
 env.list
+token.json
 
 # State files
 data/positions.json

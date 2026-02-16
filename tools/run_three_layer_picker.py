@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -79,6 +80,96 @@ def _fetch_industry_map(tickers: list[str]) -> Dict[str, str]:
         except Exception:
             out[t] = "Unknown"
     return out
+
+
+def _run_cache_preflight(cfg: dict, symbols: list[str], out_dir: Path) -> None:
+    """
+    Run cache health gate automatically before stock picking.
+
+    This is fail-closed by default: if health checks fail, picker aborts.
+    """
+    pre = cfg.get("preflight", {})
+    if not bool(pre.get("enabled", True)):
+        print("[preflight] disabled by config")
+        return
+
+    output_path = Path(pre.get("output", str(out_dir / "cache_health_preflight.json")))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    symbols_file = out_dir / ".preflight_symbols.txt"
+    symbols_file.write_text("\n".join(str(s).upper() for s in symbols), encoding="utf-8")
+
+    data_cfg = cfg.get("data", {})
+    tech_cfg = cfg.get("technical", {})
+    period = str(data_cfg.get("period", "2y")).lower().strip()
+    period_days_map = {
+        "1mo": 30,
+        "3mo": 90,
+        "6mo": 180,
+        "1y": 365,
+        "2y": 730,
+        "3y": 1095,
+        "5y": 1825,
+        "10y": 3650,
+        "max": 36500,
+    }
+    period_days = int(pre.get("period_days", period_days_map.get(period, 730)))
+    min_bars = int(pre.get("min_bars", tech_cfg.get("min_bars", 260)))
+
+    cmd = [
+        sys.executable,
+        str(ROOT / "tools" / "cache_health_check.py"),
+        "--symbols-file",
+        str(symbols_file),
+        "--period-days",
+        str(period_days),
+        "--min-bars",
+        str(min_bars),
+        "--max-stale-days",
+        str(int(pre.get("max_stale_days", 7))),
+        "--max-invalid-rows",
+        str(int(pre.get("max_invalid_rows", 0))),
+        "--max-missing-pct",
+        str(float(pre.get("max_missing_pct", 0.02))),
+        "--min-fresh-pct",
+        str(float(pre.get("min_fresh_pct", 0.98))),
+        "--min-minbars-pct",
+        str(float(pre.get("min_minbars_pct", 0.80))),
+        "--output",
+        str(output_path),
+    ]
+
+    if bool(pre.get("repair_invalid_first", True)):
+        cmd.append("--repair-invalid-first")
+    if bool(pre.get("include_quarterly", False)):
+        cmd.extend(
+            [
+                "--include-quarterly",
+                "--min-quarterly-coverage-pct",
+                str(float(pre.get("min_quarterly_coverage_pct", 0.50))),
+            ]
+        )
+    if bool(pre.get("strict", True)):
+        cmd.append("--strict")
+
+    print("\n[preflight] running cache health gate")
+    print(f"[preflight] cmd: {' '.join(cmd)}")
+    rc = subprocess.run(cmd, cwd=str(ROOT)).returncode
+
+    # Clean up temporary file; report JSON is persisted.
+    try:
+        symbols_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    fail_action = str(pre.get("on_fail", "abort")).lower().strip()
+    if rc != 0:
+        msg = f"[preflight] cache health failed with exit code {rc}; report={output_path}"
+        if fail_action == "warn":
+            print(f"{msg} (continuing due to on_fail=warn)")
+            return
+        raise RuntimeError(msg)
+
+    print(f"[preflight] passed; report={output_path}")
 
 
 # ── Pipeline stages ─────────────────────────────────────────────────────────
@@ -236,19 +327,37 @@ def stage_post_process(picks_df, cfg) -> pd.DataFrame:
     return result.head(pp_cfg.get("top_n", 25))
 
 
-def stage_lookback(prices, spy_df, fund_svc, cfg, current_picks) -> pd.DataFrame:
+def stage_lookback(
+    prices,
+    spy_df,
+    fund_svc,
+    cfg,
+    current_picks,
+    out_dir: Path,
+    refresh_historical_cache: bool = False,
+) -> pd.DataFrame:
     """Stage G: run picker at historical dates and compare."""
     lb_cfg = cfg.get("lookback", {})
     months_list = lb_cfg.get("months_back", [3, 6, 9])
     today = date.today()
 
     results = {"now": current_picks}
+    current_picks.to_csv(out_dir / "lookback_now.csv", index=False)
     for m in months_list:
         as_of = today - timedelta(days=m * 30)
         label = f"{m}m_ago"
         print(f"\n  Running lookback at {as_of} ({label})")
-        picks = run_picker_at_date(prices, spy_df, fund_svc, cfg, as_of_date=as_of)
+        picks = run_picker_at_date(
+            prices,
+            spy_df,
+            fund_svc,
+            cfg,
+            as_of_date=as_of,
+            refresh_historical_cache=refresh_historical_cache,
+        )
+        picks = stage_post_process(picks, cfg)
         results[label] = picks
+        picks.to_csv(out_dir / f"lookback_{label}.csv", index=False)
 
     comparison = compare_across_dates(results, current_prices=prices)
     return comparison
@@ -256,7 +365,7 @@ def stage_lookback(prices, spy_df, fund_svc, cfg, current_picks) -> pd.DataFrame
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-def run(cfg: dict, enable_lookback: bool = False) -> None:
+def run(cfg: dict, enable_lookback: bool = False, rebuild_historical_cache: bool = False) -> None:
     t_global = time.time()
     data_cfg = cfg.get("data", {})
     out_cfg = cfg.get("output", {})
@@ -275,6 +384,9 @@ def run(cfg: dict, enable_lookback: bool = False) -> None:
     blacklist = blacklist_store.load()
     symbols = [s for s in symbols if s not in blacklist]
     print(f"Universe: {len(symbols)} symbols ({len(blacklist)} blacklisted)")
+
+    # Embedded DQ gate: run automatically so users do not need manual pre-checks.
+    _run_cache_preflight(cfg, symbols, out_dir)
 
     # A-C: Price ingestion
     prices = stage_load_prices(dm, symbols, cfg)
@@ -325,7 +437,16 @@ def run(cfg: dict, enable_lookback: bool = False) -> None:
     # G: Lookback (optional)
     if enable_lookback or cfg.get("lookback", {}).get("enabled", False):
         print("\n[G] Historical lookback comparison")
-        comparison = stage_lookback(prices, spy, fund_svc, cfg, quality)
+        refresh_historical = rebuild_historical_cache or bool(cfg.get("lookback", {}).get("refresh_snapshot_cache", False))
+        comparison = stage_lookback(
+            prices,
+            spy,
+            fund_svc,
+            cfg,
+            final,
+            out_dir,
+            refresh_historical_cache=refresh_historical,
+        )
         comparison.to_csv(out_dir / "lookback_comparison.csv", index=False)
 
         persistent = comparison[comparison["appearances"] >= 2]
@@ -342,7 +463,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Three-layer stock picker")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Config YAML path")
     parser.add_argument("--lookback", action="store_true", help="Enable historical lookback")
+    parser.add_argument(
+        "--rebuild-historical-cache",
+        action="store_true",
+        help="Recompute and overwrite historical fundamental snapshot cache files",
+    )
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
-    run(cfg, enable_lookback=args.lookback)
+    run(
+        cfg,
+        enable_lookback=args.lookback,
+        rebuild_historical_cache=args.rebuild_historical_cache,
+    )

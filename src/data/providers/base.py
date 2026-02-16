@@ -56,5 +56,7 @@ class FundamentalDataProvider(ABC):
         """
         Return earnings calendar DataFrame with columns:
         ticker, report_date, disclosure_date
+        Optional enrichment columns:
+        release_time_et, release_session
         """
         raise NotImplementedError

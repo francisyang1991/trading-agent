@@ -31,6 +31,7 @@ import os
 import sys
 import re
 import json
+from pathlib import Path
 import asyncio
 import logging
 import discord
@@ -41,6 +42,12 @@ from zoneinfo import ZoneInfo
 # Core analysis (LLM + yfinance)
 sys.path.append(os.path.join(os.path.dirname(__file__), '../core_analysis'))
 from llm_analyzer import _call_minimax_anthropic, get_stock_context
+
+# Trading agent root (for email analysis)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_TRADING_AGENT_ROOT = os.path.abspath(os.path.join(_script_dir, '..', '..', '..'))
+if _TRADING_AGENT_ROOT not in sys.path:
+    sys.path.insert(0, _TRADING_AGENT_ROOT)
 
 # Trading modules (same directory)
 import trade_parser
@@ -80,6 +87,10 @@ AUTO_EXECUTION_TIME = (6, 35)  # 9:35 AM ET
 
 # Timeouts (seconds)
 PIPELINE_TIMEOUT_SECONDS = int(os.environ.get("PIPELINE_TIMEOUT_SECONDS", "1200"))
+
+# Citrini email → Discord (optional)
+CITRINI_EMAIL_ENABLED = os.environ.get("CITRINI_EMAIL_ENABLED", "false").lower() in ("1", "true", "yes")
+CITRINI_EMAIL_INTERVAL_MIN = int(os.environ.get("CITRINI_EMAIL_INTERVAL_MIN", "60"))
 
 # ---------------------------------------------------------------------------
 # Bot setup
@@ -675,6 +686,9 @@ async def on_ready():
     asyncio.create_task(_auto_execute_scheduler())
     # Start mid-day portfolio check (12:00 PM PT)
     asyncio.create_task(_midday_check_scheduler())
+    # Start Citrini email checker (new emails → LLM → Discord)
+    if CITRINI_EMAIL_ENABLED:
+        asyncio.create_task(_citrini_email_scheduler())
     # Send startup health report to Discord
     asyncio.create_task(_send_startup_report())
 
@@ -1012,6 +1026,56 @@ async def _midday_check_scheduler():
             except Exception:
                 pass
             await asyncio.sleep(60)
+
+
+async def _citrini_email_scheduler():
+    """
+    Periodically check for new Citrini emails, run LLM extraction, send trade ideas to Discord.
+    """
+    await asyncio.sleep(300)  # Wait 5 min after startup
+    interval_sec = max(300, CITRINI_EMAIL_INTERVAL_MIN * 60)
+
+    while True:
+        try:
+            channel = await _get_digest_channel()
+            if not channel:
+                await asyncio.sleep(interval_sec)
+                continue
+
+            try:
+                from src.email_analysis.citrini_discord import run_citrini_email_check
+            except ImportError as e:
+                log.warning(f"Citrini email check skipped (import error): {e}")
+                await asyncio.sleep(interval_sec)
+                continue
+
+            root_dir = Path(_TRADING_AGENT_ROOT)
+            client_secret = str(root_dir / "secret" / "client_secret_75860045039-mgs0h9aai4488pokfqgsqlb1doo41eh4.apps.googleusercontent.com.json")
+            token_path = str(root_dir / "token.json")
+
+            llm_provider = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "zai"
+            messages, err = run_citrini_email_check(
+                client_secret_path=client_secret,
+                token_path=token_path,
+                processed_path="data/email/citrini_processed.json",
+                sender="citrini@substack.com",
+                limit=10,
+                unseen_only=True,
+                llm_provider=llm_provider,
+                root_dir=root_dir,
+            )
+
+            if err:
+                log.warning(f"Citrini email check failed: {err}")
+            elif messages:
+                await _safe_send(channel, f"📬 *New Citrini Newsletter* — trade ideas extracted:\n")
+                for msg in messages:
+                    await _safe_send(channel, msg)
+                    await asyncio.sleep(1)
+                log.info(f"Citrini: sent {len(messages)} trade idea message(s) to Discord")
+        except Exception as e:
+            log.warning(f"Citrini email scheduler error: {e}")
+        await asyncio.sleep(interval_sec)
 
 
 async def _daily_learning_scheduler():
@@ -1635,6 +1699,41 @@ async def cmd_pipeline(ctx):
         await _safe_send(ctx, f"❌ Pipeline error: {str(e)[:200]}")
 
 
+@bot.command(name="citrini")
+async def cmd_citrini(ctx):
+    """Manually check for new Citrini emails, run LLM, post trade ideas to Discord."""
+    await _safe_send(ctx, "📬 Checking Citrini inbox for new emails...")
+    try:
+        from src.email_analysis.citrini_discord import run_citrini_email_check
+    except ImportError as e:
+        return await _safe_send(ctx, f"❌ Citrini module not available: {e}")
+
+    root_dir = Path(_TRADING_AGENT_ROOT)
+    client_secret = str(root_dir / "secret" / "client_secret_75860045039-mgs0h9aai4488pokfqgsqlb1doo41eh4.apps.googleusercontent.com.json")
+    token_path = str(root_dir / "token.json")
+    llm_provider = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "zai"
+
+    messages, err = run_citrini_email_check(
+        client_secret_path=client_secret,
+        token_path=token_path,
+        processed_path="data/email/citrini_processed.json",
+        sender="citrini@substack.com",
+        limit=10,
+        unseen_only=True,
+        llm_provider=llm_provider,
+        root_dir=root_dir,
+    )
+
+    if err:
+        return await _safe_send(ctx, f"❌ Citrini check failed: {err}")
+    if not messages:
+        return await _safe_send(ctx, "📭 No new Citrini emails to process.")
+    await _safe_send(ctx, f"📬 *New Citrini Newsletter* — {len(messages)} email(s) processed:\n")
+    for msg in messages:
+        await _safe_send(ctx, msg)
+        await asyncio.sleep(1)
+
+
 @bot.command(name="midday")
 async def cmd_midday(ctx):
     """Run mid-day portfolio review manually."""
@@ -1803,6 +1902,7 @@ HELP_TEXT = (
     "• `!daily [N]` — Analyze last N days signals (default 3)\n\n"
     "📡 **Pipeline & Auto-Trading:**\n"
     "• `!pipeline` — Full pipeline (signals + scanner + auto-trade in paper)\n"
+    "• `!citrini` — Check Citrini emails, extract trade ideas, post to Discord\n"
     "• `!approve TICKER` — Approve & place limit order\n"
     "• `!midday` — Run mid-day portfolio review\n"
     "• `!portfolio` — Position management suggestions\n\n"

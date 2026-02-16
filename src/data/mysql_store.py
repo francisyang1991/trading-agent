@@ -11,14 +11,18 @@ import os
 from typing import Optional
 
 import pandas as pd
-from sqlalchemy import create_engine
+
+try:
+    from sqlalchemy import create_engine
+except Exception:  # pragma: no cover - optional dependency
+    create_engine = None
 
 
 class MySQLFundamentalsStore:
     def __init__(self, mysql_url: Optional[str] = None):
         self.mysql_url = mysql_url or os.getenv("MYSQL_URL", "")
         self._engine = None
-        if self.mysql_url:
+        if self.mysql_url and create_engine is not None:
             # Use SQLAlchemy with pymysql driver.
             self._engine = create_engine(
                 self.mysql_url,

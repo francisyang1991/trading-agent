@@ -313,8 +313,56 @@ class DataManager:
 
     def _period_to_days(self, period: str) -> int:
         """Map period string to approximate day count."""
-        days_map = {'1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '2y': 730, '5y': 1825}
+        days_map = {
+            '1mo': 30,
+            '3mo': 90,
+            '6mo': 180,
+            '1y': 365,
+            '2y': 730,
+            '3y': 1095,
+            '5y': 1825,
+            '10y': 3650,
+            'max': 36500,
+        }
         return days_map.get(period, 365)
+
+    def _sanitize_daily_frame(self, data: Optional[pd.DataFrame]) -> pd.DataFrame:
+        """
+        Enforce daily OHLCV quality constraints before cache reads/writes.
+        """
+        if data is None or getattr(data, "empty", True):
+            return pd.DataFrame(columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+
+        out = data.copy()
+        if "Date" not in out.columns:
+            if isinstance(out.index, pd.DatetimeIndex):
+                out = out.reset_index().rename(columns={out.index.name or "index": "Date"})
+            else:
+                return pd.DataFrame(columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+
+        required = ["Date", "Open", "High", "Low", "Close", "Volume"]
+        for col in required:
+            if col not in out.columns:
+                out[col] = pd.NA
+
+        out = out[required].copy()
+        out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+            out[col] = out[col].replace([np.inf, -np.inf], np.nan)
+
+        out = out.dropna(subset=["Date", "Open", "High", "Low", "Close"])
+        out = out[
+            (out["Open"] > 0)
+            & (out["High"] > 0)
+            & (out["Low"] > 0)
+            & (out["Close"] > 0)
+            & (out["High"] >= out["Low"])
+        ]
+        out["Volume"] = out["Volume"].fillna(0).clip(lower=0).astype(int)
+        out["Date"] = out["Date"].dt.date
+        out = out.drop_duplicates(subset=["Date"], keep="last").sort_values("Date")
+        return out
 
     def _needs_daily_coverage(self, symbol: str, period: str) -> bool:
         """
@@ -327,7 +375,22 @@ class DataManager:
 
             conn = self.get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT MIN(date) FROM stock_daily WHERE symbol = ?", (symbol,))
+            cursor.execute(
+                """
+                SELECT MIN(date) FROM stock_daily
+                WHERE symbol = ?
+                  AND open IS NOT NULL
+                  AND high IS NOT NULL
+                  AND low IS NOT NULL
+                  AND close IS NOT NULL
+                  AND open > 0
+                  AND high > 0
+                  AND low > 0
+                  AND close > 0
+                  AND high >= low
+                """,
+                (symbol,),
+            )
             row = cursor.fetchone()
             conn.close()
 
@@ -399,6 +462,10 @@ class DataManager:
     
     def _save_daily_to_db(self, symbol: str, data: pd.DataFrame):
         """Save daily data to database (bulk insert)."""
+        clean = self._sanitize_daily_frame(data)
+        if clean.empty:
+            return
+
         with self._lock:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -413,7 +480,7 @@ class DataManager:
                     row["Close"],
                     int(row["Volume"]) if pd.notna(row["Volume"]) else 0,
                 )
-                for _, row in data.iterrows()
+                for _, row in clean.iterrows()
             ]
             cursor.executemany(
                 """
@@ -431,7 +498,7 @@ class DataManager:
                 (symbol, daily_last_date, daily_last_updated)
                 VALUES (?, ?, ?)
                 """,
-                (symbol, data["Date"].max(), datetime.now().isoformat()),
+                (symbol, clean["Date"].max(), datetime.now().isoformat()),
             )
 
             conn.commit()
@@ -450,6 +517,15 @@ class DataManager:
             SELECT date, open, high, low, close, volume
             FROM stock_daily
             WHERE symbol = ? AND date >= ?
+              AND open IS NOT NULL
+              AND high IS NOT NULL
+              AND low IS NOT NULL
+              AND close IS NOT NULL
+              AND open > 0
+              AND high > 0
+              AND low > 0
+              AND close > 0
+              AND high >= low
             ORDER BY date ASC
         """
         
@@ -458,12 +534,14 @@ class DataManager:
         
         if data.empty:
             return None
-        
-        # Convert to proper format
+
+        # Convert to proper format and sanitize any legacy bad rows.
         data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-        data['Date'] = pd.to_datetime(data['Date'])
-        data.set_index('Date', inplace=True)
-        
+        data = self._sanitize_daily_frame(data)
+        if data.empty:
+            return None
+        data["Date"] = pd.to_datetime(data["Date"])
+        data.set_index("Date", inplace=True)
         return data
     
     # -------------------------------------------------------------------------
@@ -926,6 +1004,71 @@ class DataManager:
             "latest_rows_count": len(latest_rows),
             "non_null_latest": non_null,
         }
+
+    def purge_invalid_daily_rows(self, symbol: Optional[str] = None) -> int:
+        """
+        Delete invalid OHLCV rows from cache.
+
+        Invalid means:
+        - any OHLC field is NULL
+        - any OHLC field is <= 0
+        - high < low
+        """
+        cond = (
+            "open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL "
+            "OR open <= 0 OR high <= 0 OR low <= 0 OR close <= 0 OR high < low"
+        )
+        params: Tuple = ()
+        where = f"({cond})"
+        if symbol:
+            where = f"symbol = ? AND ({cond})"
+            params = (symbol.upper(),)
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM stock_daily WHERE {where}", params)
+        to_delete = int(cursor.fetchone()[0] or 0)
+        if to_delete <= 0:
+            conn.close()
+            return 0
+
+        cursor.execute(f"DELETE FROM stock_daily WHERE {where}", params)
+
+        # Refresh metadata daily_last_date pointers.
+        if symbol:
+            sym = symbol.upper()
+            cursor.execute(
+                """
+                UPDATE data_metadata
+                SET daily_last_date = (
+                    SELECT MAX(date) FROM stock_daily WHERE symbol = ?
+                )
+                WHERE symbol = ?
+                """,
+                (sym, sym),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE data_metadata
+                SET daily_last_date = (
+                    SELECT MAX(sd.date)
+                    FROM stock_daily sd
+                    WHERE sd.symbol = data_metadata.symbol
+                )
+                """
+            )
+
+        conn.commit()
+        conn.close()
+
+        if symbol:
+            sym = symbol.upper()
+            self._cache = {k: v for k, v in self._cache.items() if not k.startswith(f"{sym}_")}
+        else:
+            self._cache = {}
+
+        return to_delete
     
     def clear_cache(self, symbol: Optional[str] = None):
         """Clear cache for a symbol or all symbols."""
@@ -969,6 +1112,12 @@ def main():
     parser.add_argument("--test", type=str, help="Test loading a symbol")
     parser.add_argument("--backfill-quarterly", action="store_true", help="Backfill quarterly fundamentals to parquet")
     parser.add_argument("--validate-quarterly", action="store_true", help="Validate quarterly fundamentals coverage")
+    parser.add_argument(
+        "--purge-invalid-daily",
+        nargs="?",
+        const="ALL",
+        help="Delete invalid OHLCV rows (optionally pass a symbol, default ALL)",
+    )
     parser.add_argument("--symbols-file", type=str, help="File with one ticker per line (optional)")
     parser.add_argument("--max-symbols", type=int, default=0, help="Max symbols to backfill (0 = all)")
     
@@ -983,6 +1132,13 @@ def main():
         print(f"   Total daily records: {stats['daily_records']:,}")
         print(f"   Fundamental records: {stats['fundamental_records']}")
         print(f"   Database size: {stats['database_size_mb']:.2f} MB")
+        return
+
+    if args.purge_invalid_daily:
+        target = None if args.purge_invalid_daily == "ALL" else str(args.purge_invalid_daily).upper()
+        removed = dm.purge_invalid_daily_rows(target)
+        scope = "all symbols" if target is None else target
+        print(f"🧹 Purged invalid daily rows for {scope}: {removed}")
         return
 
     if args.backfill_quarterly:
