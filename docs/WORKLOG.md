@@ -3,6 +3,35 @@
 **Last Updated:** 2026-02-16
 **Branch:** `feature/pst-scheduler-gui-final`
 
+## Feb 16, 2026 — Phase 1 Refactor Complete (Core moved to `src/`, tools kept as shims)
+
+### What Changed
+- Moved cache-health core logic from `tools/cache_health_check.py` to:
+  - `src/picker/cache_health.py`
+- Moved incremental earnings-refresh core logic from `tools/incremental_earnings_refresh.py` to:
+  - `src/picker/incremental_refresh.py`
+- Replaced `tools/cache_health_check.py` and `tools/incremental_earnings_refresh.py` with thin wrappers that only import and call `main()` from `src/`.
+
+### Discord Bot Support Added (AWS bot command surface)
+- Updated `workspace/scripts/discord_bot/interactive_bot.py` with new commands:
+  - `!cache_health [technical|listed|db]`
+    - Runs strict cache-health gate (`--repair-invalid-first --strict`)
+    - Returns PASS/FAIL summary + report path.
+  - `!earnings_refresh [months_csv] [dry-run]`
+    - Runs incremental earnings refresh from Discord.
+    - Returns run summary from latest audit row in `results/picker/earnings_refresh_runs.csv`.
+- Help text updated to include both commands.
+
+### Validation (Post-Refactor)
+- Compile checks:
+  - `python3 -m py_compile src/picker/cache_health.py src/picker/incremental_refresh.py tools/cache_health_check.py tools/incremental_earnings_refresh.py workspace/scripts/discord_bot/interactive_bot.py`
+- Wrapper smoke tests:
+  - `python3 tools/cache_health_check.py --help`
+  - `python3 tools/incremental_earnings_refresh.py --help`
+- Functional checks:
+  - `python3 tools/cache_health_check.py --scope technical --repair-invalid-first --strict --output results/picker/cache_health_technical.json` -> `PASS`
+  - `python3 tools/incremental_earnings_refresh.py --symbols AAPL NVDA MSFT --months-back 3,6 --skip-validation --skip-scanner --dry-run --progress-every 1` -> clean run, no regressions.
+
 ## Feb 15, 2026 23:17 PST (Sunday Pre-Open for Monday, Feb 16) — Live Cache Safety Validation
 
 ### Commands Run

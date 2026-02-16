@@ -75,11 +75,15 @@
 
 ## 5) Refactor Plan (aligned with `.cursor/rules/trading-agent.md`)
 
-### Phase 1: Move heavy tool logic into `src/` (1 sprint)
+### Phase 1: Move heavy tool logic into `src/` (completed 2026-02-16)
 
 - Move cache-health core from `tools/cache_health_check.py` -> `src/picker/cache_health.py`
 - Move incremental earnings refresh core from `tools/incremental_earnings_refresh.py` -> `src/picker/incremental_refresh.py`
 - Keep `tools/` scripts as thin CLI shims.
+
+Operational support:
+- Discord bot command `!cache_health [technical|listed|db]` for strict preflight checks.
+- Discord bot command `!earnings_refresh [months_csv] [dry-run]` for targeted incremental refresh.
 
 ### Phase 2: Shared data contracts + audit model (1 sprint)
 
@@ -107,4 +111,3 @@
 3. Generate earnings session timing for final candidate set:
   - `python3 tools/earnings_calendar.py --symbols-file results/picker/three_layer_picks.csv --days-ahead 14`
 4. Execute only picks passing risk budget and event-timing constraints.
-
