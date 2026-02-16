@@ -31,8 +31,6 @@ import os
 import sys
 import re
 import json
-import csv
-import subprocess
 from pathlib import Path
 import asyncio
 import logging
@@ -485,50 +483,6 @@ async def _safe_send(channel, text):
     if len(text) > 2000:
         text = text[:1997] + "..."
     await channel.send(text)
-
-
-def _repo_tool_path(tool_name: str) -> str:
-    return str(Path(_TRADING_AGENT_ROOT) / "tools" / tool_name)
-
-
-def _tail_lines(text: str, n: int = 8) -> str:
-    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
-    if not lines:
-        return ""
-    return "\n".join(lines[-n:])
-
-
-def _read_last_csv_row(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    last = {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                last = row
-    except Exception:
-        return {}
-    return last
-
-
-async def _run_repo_command(cmd: list[str], timeout_seconds: int = 1800) -> tuple[int, str, str]:
-    def _exec():
-        return subprocess.run(
-            cmd,
-            cwd=_TRADING_AGENT_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-
-    try:
-        proc = await asyncio.to_thread(_exec)
-        return proc.returncode, proc.stdout or "", proc.stderr or ""
-    except subprocess.TimeoutExpired as e:
-        out = e.stdout or ""
-        err = e.stderr or ""
-        return 124, out, err
 
 
 def _now_local():
@@ -1371,120 +1325,6 @@ async def cmd_daily(ctx, days: int = 3):
     await _analyze_daily_signals(ctx, days=days)
 
 
-@bot.command(name="cache_health")
-async def cmd_cache_health(ctx, scope: str = "technical"):
-    """Run stock-cache health gate from Discord. Usage: !cache_health [technical|listed|db]."""
-    scope = (scope or "technical").lower().strip()
-    if scope not in {"technical", "listed", "db"}:
-        return await _safe_send(ctx, "Usage: `!cache_health [technical|listed|db]`")
-
-    output_rel = f"results/picker/cache_health_{scope}_discord.json"
-    output_abs = Path(_TRADING_AGENT_ROOT) / output_rel
-    await _safe_send(ctx, f"🧪 Running cache health check (`{scope}`)...")
-
-    cmd = [
-        sys.executable,
-        _repo_tool_path("cache_health_check.py"),
-        "--scope",
-        scope,
-        "--repair-invalid-first",
-        "--strict",
-        "--output",
-        output_rel,
-    ]
-    rc, stdout, stderr = await _run_repo_command(cmd, timeout_seconds=900)
-
-    report = {}
-    summary = {}
-    checks = {}
-    if output_abs.exists():
-        try:
-            report = json.loads(output_abs.read_text(encoding="utf-8"))
-            summary = report.get("summary", {}) or {}
-            checks = report.get("checks", {}) or {}
-        except Exception:
-            pass
-
-    def _pct(v) -> str:
-        try:
-            return f"{float(v) * 100.0:.2f}%"
-        except Exception:
-            return "n/a"
-
-    status = str(summary.get("status", "UNKNOWN")).upper()
-    icon = "✅" if rc == 0 and status == "PASS" else "⚠️"
-    lines = [
-        f"{icon} *Cache Health* (`{scope}`) — status: `{status}` (rc={rc})",
-        f"Universe: {summary.get('symbol_count', 'n/a')} | Missing: {summary.get('universe_missing_symbols', 'n/a')} ({_pct(summary.get('missing_pct'))})",
-        f"Fresh: {summary.get('universe_fresh_symbols', 'n/a')} ({_pct(summary.get('fresh_pct'))}) | Min-bars: {summary.get('universe_minbars_symbols', 'n/a')} ({_pct(summary.get('minbars_pct'))})",
-        f"Invalid rows (global): {summary.get('invalid_rows_global', 'n/a')}",
-        f"Checks: invalid={checks.get('invalid_rows_ok')} missing={checks.get('missing_ok')} fresh={checks.get('fresh_ok')} minbars={checks.get('minbars_ok')}",
-        f"Report: `{output_rel}`",
-    ]
-
-    tail = _tail_lines(stdout + "\n" + stderr, n=6)
-    if tail and (rc != 0 or status != "PASS"):
-        lines.append(f"Last logs:\n```{tail}```")
-    await _safe_send(ctx, "\n".join(lines))
-
-
-@bot.command(name="earnings_refresh")
-async def cmd_earnings_refresh(ctx, *args):
-    """
-    Run incremental earnings refresh from Discord.
-    Usage:
-      !earnings_refresh
-      !earnings_refresh 3,6,9,12
-      !earnings_refresh 3,6,9,12 dry-run
-    """
-    dry_run = False
-    months_back = "3,6,9,12"
-
-    for token in args:
-        t = token.lower().strip()
-        if t in {"dry", "dry-run", "plan"}:
-            dry_run = True
-        elif re.fullmatch(r"[0-9,\s]+", token or ""):
-            months_back = token.replace(" ", "")
-
-    await _safe_send(
-        ctx,
-        f"🔄 Running incremental earnings refresh (months=`{months_back}`, dry_run={dry_run})...",
-    )
-
-    cmd = [
-        sys.executable,
-        _repo_tool_path("incremental_earnings_refresh.py"),
-        "--months-back",
-        months_back,
-        "--progress-every",
-        "25",
-    ]
-    if dry_run:
-        cmd.append("--dry-run")
-
-    rc, stdout, stderr = await _run_repo_command(cmd, timeout_seconds=3600)
-    runs_csv = Path(_TRADING_AGENT_ROOT) / "results/picker/earnings_refresh_runs.csv"
-    last = _read_last_csv_row(runs_csv)
-
-    icon = "✅" if rc == 0 else "⚠️"
-    lines = [
-        f"{icon} *Incremental Earnings Refresh* — rc={rc}",
-        f"Run ID: {last.get('run_id', 'n/a')} | TS: {last.get('run_ts_utc', 'n/a')}",
-        f"Candidates: {last.get('candidates_total', 'n/a')} | Refresh candidates: {last.get('refresh_candidates', 'n/a')}",
-        f"Impacted tickers: {last.get('impacted_tickers', 'n/a')} | Release changes: {last.get('release_changes', 'n/a')}",
-        f"Affected as-of dates: {last.get('affected_asof_dates', 'n/a')} | Snapshot rows changed: {last.get('snapshot_rows_with_changes', 'n/a')}",
-        f"Validation rc: {last.get('validation_rc', 'n/a')} | Scanner rc: {last.get('scanner_rc', 'n/a')}",
-        f"Scanner output: `{last.get('scanner_output', '')}`",
-        "Audit: `results/picker/earnings_refresh_runs.csv`",
-    ]
-
-    tail = _tail_lines(stdout + "\n" + stderr, n=8)
-    if tail and rc != 0:
-        lines.append(f"Last logs:\n```{tail}```")
-    await _safe_send(ctx, "\n".join(lines))
-
-
 def _collect_recent_messages(days=7):
     """Collect recent messages from cached data, grouped by ticker.
 
@@ -2063,8 +1903,6 @@ HELP_TEXT = (
     "📡 **Pipeline & Auto-Trading:**\n"
     "• `!pipeline` — Full pipeline (signals + scanner + auto-trade in paper)\n"
     "• `!citrini` — Check Citrini emails, extract trade ideas, post to Discord\n"
-    "• `!cache_health technical` — Run picker cache gate (technical/listed/db)\n"
-    "• `!earnings_refresh 3,6,9,12` — Run incremental earnings refresh\n"
     "• `!approve TICKER` — Approve & place limit order\n"
     "• `!midday` — Run mid-day portfolio review\n"
     "• `!portfolio` — Position management suggestions\n\n"

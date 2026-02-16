@@ -82,8 +82,9 @@
 - Keep `tools/` scripts as thin CLI shims.
 
 Operational support:
-- Discord bot command `!cache_health [technical|listed|db]` for strict preflight checks.
-- Discord bot command `!earnings_refresh [months_csv] [dry-run]` for targeted incremental refresh.
+- Embedded in `tools/run_three_layer_picker.py`:
+  - preflight cache-health gate runs automatically before ingestion
+  - incremental earnings refresh runs automatically after technical stage and before fundamentals stage
 
 ### Phase 2: Shared data contracts + audit model (1 sprint)
 
@@ -104,10 +105,8 @@ Operational support:
 
 ## 6) Immediate Execution Checklist (for Monday Open)
 
-1. Run embedded picker (preflight auto-runs):
+1. Run embedded picker (preflight + earnings-refresh auto-run):
   - `python3 tools/run_three_layer_picker.py`
-2. If pre-open earnings updates expected, run incremental refresh first:
-  - `python3 tools/incremental_earnings_refresh.py --months-back 3,6,9,12`
-3. Generate earnings session timing for final candidate set:
+2. Generate earnings session timing for final candidate set:
   - `python3 tools/earnings_calendar.py --symbols-file results/picker/three_layer_picks.csv --days-ahead 14`
-4. Execute only picks passing risk budget and event-timing constraints.
+3. Execute only picks passing risk budget and event-timing constraints.

@@ -403,6 +403,10 @@ def run(args) -> int:
 
     print(f"Run ID: {run_id}")
     print(f"Candidates: {len(candidates)} (source={source})")
+    recent_days = max(0, int(getattr(args, "calendar_recent_days", 0) or 0))
+    recent_cutoff = date.today() - timedelta(days=recent_days) if recent_days > 0 else None
+    if recent_cutoff is not None:
+        print(f"Calendar disclosure lookback: {recent_days} day(s) (cutoff={recent_cutoff.isoformat()})")
 
     # Stage 1: detect likely-impacted tickers via earnings calendar delta.
     cached_quarterly_by_symbol: Dict[str, pd.DataFrame] = {}
@@ -421,7 +425,8 @@ def run(args) -> int:
             cal = _normalize_calendar_dates(dm.get_earnings_calendar(symbol))
             latest_calendar = max(cal) if cal else None
             if latest_calendar and (latest_cached is None or latest_calendar > latest_cached):
-                should_refresh = True
+                if recent_cutoff is None or latest_calendar >= recent_cutoff:
+                    should_refresh = True
 
         if should_refresh:
             refresh_candidates.append(symbol)
@@ -697,6 +702,12 @@ def main() -> None:
         "--force-refresh-all-candidates",
         action="store_true",
         help="Force quarterly refresh for all candidates (skip calendar prefilter)",
+    )
+    parser.add_argument(
+        "--calendar-recent-days",
+        type=int,
+        default=0,
+        help="Only consider new calendar disclosures in the last N days (0 = no recency filter)",
     )
     parser.add_argument(
         "--months-back",

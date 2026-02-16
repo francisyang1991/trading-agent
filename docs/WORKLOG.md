@@ -12,15 +12,17 @@
   - `src/picker/incremental_refresh.py`
 - Replaced `tools/cache_health_check.py` and `tools/incremental_earnings_refresh.py` with thin wrappers that only import and call `main()` from `src/`.
 
-### Discord Bot Support Added (AWS bot command surface)
-- Updated `workspace/scripts/discord_bot/interactive_bot.py` with new commands:
-  - `!cache_health [technical|listed|db]`
-    - Runs strict cache-health gate (`--repair-invalid-first --strict`)
-    - Returns PASS/FAIL summary + report path.
-  - `!earnings_refresh [months_csv] [dry-run]`
-    - Runs incremental earnings refresh from Discord.
-    - Returns run summary from latest audit row in `results/picker/earnings_refresh_runs.csv`.
-- Help text updated to include both commands.
+### Embedded Automation (No Manual Bot Commands Required)
+- Updated `tools/run_three_layer_picker.py` to auto-run incremental earnings refresh between:
+  - Stage D (technical filter) and Stage E (fundamental enrichment).
+- Behavior:
+  - Uses current technical candidate tickers for targeted refresh scope.
+  - Applies recency filter for disclosures from yesterday/today by default (`calendar_recent_days=2`).
+  - Keeps fail-closed behavior via `earnings_refresh.on_fail` (`abort|warn`).
+- Result:
+  - cache health + earnings refresh are now sub-functions of normal picker execution.
+  - no separate Discord command is required for regular stock-picking runs.
+  - removed standalone `!cache_health` / `!earnings_refresh` bot commands from `interactive_bot.py` help surface.
 
 ### Validation (Post-Refactor)
 - Compile checks:
@@ -31,6 +33,21 @@
 - Functional checks:
   - `python3 tools/cache_health_check.py --scope technical --repair-invalid-first --strict --output results/picker/cache_health_technical.json` -> `PASS`
   - `python3 tools/incremental_earnings_refresh.py --symbols AAPL NVDA MSFT --months-back 3,6 --skip-validation --skip-scanner --dry-run --progress-every 1` -> clean run, no regressions.
+  - Embedded-flow smoke (auto preflight + auto earnings refresh):
+    - `python3 tools/run_three_layer_picker.py --config config/picker_config_smoke_auto.yaml`
+    - verified sequence:
+      - preflight cache gate runs first
+      - technical stage emits candidates
+      - incremental earnings refresh auto-runs before fundamentals
+      - fundamentals stage runs with refreshed snapshot cache
+
+### AWS Sync + Bot Activation
+- Synced code to AWS:
+  - `./scripts/sync_to_aws.sh` -> success.
+- Restarted active Discord bot service on AWS:
+  - `sudo systemctl restart trading-bot`
+  - status: `active (running)` after restart.
+- Updated bot help surface to avoid manual cache/refresh command dependency for stock-picking flow.
 
 ## Feb 15, 2026 23:17 PST (Sunday Pre-Open for Monday, Feb 16) — Live Cache Safety Validation
 

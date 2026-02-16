@@ -38,6 +38,7 @@ from src.data_manager import DataManager
 from src.data.providers.resilient import fallback_price_fetch
 from src.data.providers.yfinance_provider import YFinanceProvider, batch_download_daily_ohlcv
 from src.picker.fundamentals_service import FundamentalSnapshotService
+from src.picker.incremental_refresh import run as run_incremental_earnings_refresh
 from src.picker.lookback import compare_across_dates, run_picker_at_date
 from src.picker.post_processor import deduplicate_share_classes, diversify_by_industry
 from src.universe.filters import (
@@ -79,6 +80,18 @@ def _fetch_industry_map(tickers: list[str]) -> Dict[str, str]:
             out[t] = info.get("industry", "Unknown")
         except Exception:
             out[t] = "Unknown"
+    return out
+
+
+def _stable_unique(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen = set()
+    for raw in values:
+        v = str(raw).upper().strip()
+        if not v or v in seen:
+            continue
+        out.append(v)
+        seen.add(v)
     return out
 
 
@@ -170,6 +183,84 @@ def _run_cache_preflight(cfg: dict, symbols: list[str], out_dir: Path) -> None:
         raise RuntimeError(msg)
 
     print(f"[preflight] passed; report={output_path}")
+
+
+def _run_auto_earnings_refresh(
+    cfg: dict,
+    technical_tickers: list[str],
+    out_dir: Path,
+    config_path: Path,
+) -> None:
+    """
+    Automatically run incremental earnings refresh before fundamentals stage.
+
+    This keeps point-in-time fundamentals cache current (e.g., yesterday/today
+    disclosures) without requiring manual commands.
+    """
+    er_cfg = cfg.get("earnings_refresh", {})
+    if not bool(er_cfg.get("enabled", True)):
+        print("[earnings-refresh] disabled by config")
+        return
+
+    tickers = _stable_unique(technical_tickers)
+    if not tickers:
+        print("[earnings-refresh] no technical candidates; skipping")
+        return
+
+    symbols_file = out_dir / ".earnings_refresh_symbols.txt"
+    symbols_file.write_text("\n".join(tickers), encoding="utf-8")
+
+    months_cfg = er_cfg.get("months_back")
+    if months_cfg is None:
+        lb_months = cfg.get("lookback", {}).get("months_back", [3, 6, 9, 12])
+        months_cfg = ",".join(str(m) for m in lb_months)
+    months_str = str(months_cfg).strip() or "3,6,9,12"
+
+    args = argparse.Namespace(
+        config=str(config_path),
+        symbols=[],
+        symbols_file=str(symbols_file),
+        technical_universe_csv=str(out_dir / "three_layer_after_technical.csv"),
+        max_symbols=0,
+        force_refresh_all_candidates=bool(er_cfg.get("force_refresh_all_candidates", False)),
+        months_back=months_str,
+        skip_validation=bool(er_cfg.get("skip_validation", True)),
+        skip_scanner=bool(er_cfg.get("skip_scanner", True)),
+        validation_windows_csv=str(er_cfg.get("validation_windows_csv", "results/picker/walkforward_windows_report.csv")),
+        validation_trades_csv=str(er_cfg.get("validation_trades_csv", "results/picker/walkforward_trades_report.csv")),
+        validation_md=str(er_cfg.get("validation_md", "results/picker/walkforward_report.md")),
+        scanner_max_tickers=int(er_cfg.get("scanner_max_tickers", 200)),
+        scanner_output_dir=str(er_cfg.get("scanner_output_dir", "results")),
+        scanner_output=str(er_cfg.get("scanner_output", "")),
+        audit_dir=str(er_cfg.get("audit_dir", "results/picker")),
+        progress_every=max(1, int(er_cfg.get("progress_every", 50))),
+        dry_run=bool(er_cfg.get("dry_run", False)),
+        calendar_recent_days=int(er_cfg.get("calendar_recent_days", 2)),
+    )
+
+    print("\n[earnings-refresh] running incremental earnings refresh")
+    print(
+        "[earnings-refresh] "
+        f"tickers={len(tickers)} months_back={months_str} "
+        f"calendar_recent_days={args.calendar_recent_days} "
+        f"skip_validation={args.skip_validation} skip_scanner={args.skip_scanner}"
+    )
+    rc = run_incremental_earnings_refresh(args)
+
+    try:
+        symbols_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    fail_action = str(er_cfg.get("on_fail", "abort")).lower().strip()
+    if rc != 0:
+        msg = f"[earnings-refresh] incremental refresh failed with exit code {rc}"
+        if fail_action == "warn":
+            print(f"{msg} (continuing due to on_fail=warn)")
+            return
+        raise RuntimeError(msg)
+
+    print("[earnings-refresh] completed")
 
 
 # ── Pipeline stages ─────────────────────────────────────────────────────────
@@ -365,7 +456,12 @@ def stage_lookback(
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-def run(cfg: dict, enable_lookback: bool = False, rebuild_historical_cache: bool = False) -> None:
+def run(
+    cfg: dict,
+    enable_lookback: bool = False,
+    rebuild_historical_cache: bool = False,
+    config_path: Path = DEFAULT_CONFIG,
+) -> None:
     t_global = time.time()
     data_cfg = cfg.get("data", {})
     out_cfg = cfg.get("output", {})
@@ -406,6 +502,15 @@ def run(cfg: dict, enable_lookback: bool = False, rebuild_historical_cache: bool
     print("\n[D] Technical filter")
     base, tech = stage_technical(prices, spy, cfg)
     print(f"  base={len(base)} technical={len(tech)}")
+    tech.to_csv(out_dir / "three_layer_after_technical.csv", index=False)
+
+    # D.5: Auto earnings refresh before fundamentals (no manual command required).
+    _run_auto_earnings_refresh(
+        cfg=cfg,
+        technical_tickers=tech["ticker"].astype(str).tolist() if "ticker" in tech.columns else [],
+        out_dir=out_dir,
+        config_path=config_path,
+    )
 
     # E: Fundamentals
     print("\n[E] Fundamental enrichment + filter")
@@ -419,7 +524,6 @@ def run(cfg: dict, enable_lookback: bool = False, rebuild_historical_cache: bool
 
     # Save all stages
     base.to_csv(out_dir / "three_layer_base.csv", index=False)
-    tech.to_csv(out_dir / "three_layer_after_technical.csv", index=False)
     quality.to_csv(out_dir / "three_layer_picks_raw.csv", index=False)
     final.to_csv(out_dir / "three_layer_picks.csv", index=False)
 
@@ -475,4 +579,5 @@ if __name__ == "__main__":
         cfg,
         enable_lookback=args.lookback,
         rebuild_historical_cache=args.rebuild_historical_cache,
+        config_path=Path(args.config),
     )

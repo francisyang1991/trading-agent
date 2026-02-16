@@ -27,6 +27,19 @@ preflight:
   # period_days/min_bars default from data.period/technical.min_bars
   output: "results/picker/cache_health_preflight.json"
 
+# --- Auto earnings-refresh gate (before fundamentals) ---
+earnings_refresh:
+  enabled: true
+  on_fail: "abort"                  # abort | warn
+  calendar_recent_days: 2           # Refresh when earnings were disclosed yesterday/today
+  months_back: "3,6,9,12"
+  force_refresh_all_candidates: false
+  skip_validation: true             # Keep picker runtime predictable; enable if needed
+  skip_scanner: true
+  progress_every: 50
+  dry_run: false
+  audit_dir: "results/picker"
+
 # --- Technical filter (Layer 1) ---
 technical:
   rs_threshold: 80.0                # RS rank percentile floor
