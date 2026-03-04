@@ -68,6 +68,110 @@ except ImportError:
     USE_CACHE = False
 
 
+# ── Pre-load fundamental scores from DB (offline-computed) ──
+_FUND_SCORE_CACHE: Dict[str, float] = {}
+
+def _load_fundamental_scores():
+    """Load all pre-computed fundamental scores into memory at startup."""
+    global _FUND_SCORE_CACHE
+    try:
+        import sqlite3
+        db_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'stock_cache.db')
+        if not os.path.exists(db_path):
+            return
+        conn = sqlite3.connect(db_path)
+        # Check if table exists
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fundamental_scores'"
+        ).fetchone()
+        if tables:
+            rows = conn.execute("SELECT symbol, overall_score FROM fundamental_scores").fetchall()
+            _FUND_SCORE_CACHE = {r[0]: r[1] for r in rows if r[1] is not None}
+        conn.close()
+    except Exception:
+        pass
+
+_load_fundamental_scores()  # Run once at import time
+
+
+def _ibkr_fundamental_score(symbol: str) -> float:
+    """Quick fundamental score from IBKR for tickers not in pre-computed DB.
+    Uses simple heuristics on PE, ROE, gross margin, debt/equity."""
+    try:
+        import urllib.request
+        import json
+        url = f"http://34.75.9.166:8080/api/fundamentals/profile/{symbol}"
+        req = urllib.request.Request(url, headers={"X-API-Key": "saiyan-trade-2026"})
+        data = json.loads(urllib.request.urlopen(req, timeout=5).read())
+
+        score = 50.0  # start neutral
+        pe = data.get("pe_ratio")
+        roe = data.get("roe")
+        gm = data.get("gross_margin")
+        de = data.get("debt_to_equity")
+
+        if pe is not None:
+            if 0 < pe < 30: score += 10
+            elif pe > 60: score -= 10
+        if roe is not None:
+            if roe > 0.15: score += 10
+            elif roe < 0: score -= 10
+        if gm is not None:
+            if gm > 0.4: score += 10
+            elif gm < 0.2: score -= 5
+        if de is not None:
+            if de < 1: score += 5
+            elif de > 3: score -= 5
+
+        return max(0.0, min(100.0, score))
+    except Exception:
+        return 50.0
+
+
+# Common ETF suffixes and known ETF tickers that lack fundamentals
+_ETF_PATTERNS = {'SPY', 'QQQ', 'IWM', 'DIA', 'XLB', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP',
+    'XLU', 'XLV', 'XLY', 'XLRE', 'XLC', 'XME', 'XOP', 'XBI', 'XHB', 'XRT',
+    'GLD', 'SLV', 'TLT', 'HYG', 'LQD', 'VTI', 'VOO', 'ARKK', 'ARKG', 'ARKW',
+    'SOXL', 'SOXS', 'TQQQ', 'SQQQ', 'UVXY', 'VXX', 'IBIT', 'REMX', 'NLR',
+    'IGV', 'FPS', 'SIZE', 'ALGOS', 'CRUSH', 'DIP', 'IV', 'DATED', 'ISM'}
+
+
+def _is_etf(symbol: str) -> bool:
+    """Check if symbol is likely an ETF (no individual fundamentals)."""
+    if symbol in _ETF_PATTERNS:
+        return True
+    # Check if symbol has no fundamental data in cache
+    try:
+        import sqlite3
+        db_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'stock_cache.db')
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT sector FROM stock_fundamentals WHERE symbol = ?", (symbol,)
+        ).fetchone()
+        conn.close()
+        if row and row[0] in (None, '', 'ETF', 'Exchange Traded Fund'):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def get_fundamental_score(symbol: str) -> float:
+    """Get fundamental score: from pre-computed DB cache, or IBKR fallback.
+    For ETFs (no individual fundamentals), returns neutral 50 so tech factors dominate."""
+    cached = _FUND_SCORE_CACHE.get(symbol)
+    if cached is not None:
+        return cached
+    # ETFs don't have individual fundamentals — use neutral score
+    if _is_etf(symbol):
+        _FUND_SCORE_CACHE[symbol] = 50.0
+        return 50.0
+    # Fallback: quick IBKR score for unknown tickers
+    score = _ibkr_fundamental_score(symbol)
+    _FUND_SCORE_CACHE[symbol] = score  # cache for this session
+    return score
+
+
 # ============================================================================
 # ENUMS
 # ============================================================================
@@ -580,35 +684,41 @@ class StockScan:
     # Metrics
     momentum_6m: float
     momentum_3m: float
+    momentum_1m: float
+    momentum_1w: float
     volatility: float
     rsi: float
     atr_pct: float
     dist_ema21: float
-    
+    macd_line: float
+    macd_signal: float
+    macd_histogram: float
+    fundamental_score: float
+
     # Entry/Exit (for trading plan)
     buy_zone_low: float
     buy_zone_high: float
     stop_loss: float
     target_1: float
     target_2: float
-    
+
     # Expected value analysis
     win_rate: float
     avg_win: float
     avg_loss: float
     expected_value: float
     risk_reward: float
-    
+
     # Position sizing
     position_size_pct: float
     kelly_pct: float
-    
+
     # Action
     action: str
     entry_signal: str
     reasoning: str
     score: float
-    
+
     # HIGH PRIORITY: Volume-Confirmed EMA9 Pullback Pattern
     volume_pullback_signal: bool = False
     volume_pullback_data: Optional[Dict] = None
@@ -991,10 +1101,26 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
         
         dist_ema21 = (price / ema21 - 1) * 100
         
-        # Momentum
+        # Momentum (multi-timeframe)
         momentum_6m = (close.iloc[-1] / close.iloc[-126] - 1) * 100 if len(close) >= 126 else 0
         momentum_3m = (close.iloc[-1] / close.iloc[-63] - 1) * 100 if len(close) >= 63 else 0
-        
+        momentum_1m = (close.iloc[-1] / close.iloc[-21] - 1) * 100 if len(close) >= 21 else 0
+        momentum_1w = (close.iloc[-1] / close.iloc[-5] - 1) * 100 if len(close) >= 5 else 0
+
+        # MACD (12/26/9)
+        ema12_series = calculate_ema(close, 12)
+        ema26_series = calculate_ema(close, 26)
+        macd_series = ema12_series - ema26_series
+        signal_series = calculate_ema(macd_series, 9)
+        macd_line = macd_series.iloc[-1]
+        macd_signal_val = signal_series.iloc[-1]
+        macd_histogram = macd_line - macd_signal_val
+        macd_cross_bullish = macd_line > macd_signal_val
+        macd_cross_bearish = macd_line < macd_signal_val
+
+        # Fundamental score (from pre-computed DB or IBKR fallback)
+        fundamental_score = get_fundamental_score(symbol)
+
         # Volatility (annualized)
         volatility = close.pct_change().std() * np.sqrt(252) * 100
         
@@ -1041,9 +1167,17 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
             buy_zone_low = ema21 * 0.95
             stop_loss = ema21 * 0.90
         
-        # Targets
-        target_1 = price + 1.5 * atr
-        target_2 = price + 3 * atr
+        # Targets — regime-aware multipliers
+        # PARABOLIC/STRONG_UP: wider targets to match wider stops (2.5 ATR stop)
+        if regime in [Regime.PARABOLIC, Regime.STRONG_UP]:
+            target_1 = price + 3.0 * atr   # R:R ≈ 3.0/2.5 = 1.2x
+            target_2 = price + 5.0 * atr
+        elif regime in [Regime.MODERATE_UP, Regime.WEAK_UP]:
+            target_1 = price + 2.0 * atr
+            target_2 = price + 4.0 * atr
+        else:
+            target_1 = price + 1.5 * atr
+            target_2 = price + 3 * atr
         
         # Expected value
         dist = estimate_distribution(data)
@@ -1108,10 +1242,16 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
                 strategy=strategy.value,
                 momentum_6m=momentum_6m,
                 momentum_3m=momentum_3m,
+                momentum_1m=momentum_1m,
+                momentum_1w=momentum_1w,
                 volatility=volatility,
                 rsi=rsi,
                 atr_pct=atr_pct,
                 dist_ema21=dist_ema21,
+                macd_line=macd_line,
+                macd_signal=macd_signal_val,
+                macd_histogram=macd_histogram,
+                fundamental_score=fundamental_score,
                 buy_zone_low=buy_zone_low,
                 buy_zone_high=buy_zone_high,
                 stop_loss=stop_loss,
@@ -1203,11 +1343,28 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
                     f"SHORT overbought: Downtrend + RSI {rsi:.0f} extremely overbought (>75). "
                     f"High probability mean reversion. Reduced size (rare signal)."
                 )
+            elif rsi > 50 and dist_ema21 > 0:
+                # Downtrend + RSI above neutral + above EMA21 → SHORT (moderate conviction)
+                action = Action.SHORT.value
+                entry_signal = "SHORT_DOWNTREND"
+                short_stop = price + 2.0 * atr
+                target_1 = ema21 if ema21 < price else price - 1.5 * atr
+                target_2 = price - 3.0 * atr
+                buy_zone_low = target_2
+                buy_zone_high = target_1
+                stop_loss = short_stop
+                short_strat = STRATEGY_MATRIX.get((regime, vol_cat), (Strategy.SHORT_POPUP, 0.04, 0.08, 0.10))
+                strategy = short_strat[0]
+                position_size = short_strat[1] * 0.5  # Half size — moderate setup
+                reasoning = (
+                    f"SHORT downtrend: {momentum_6m:+.1f}% 6M momentum, RSI {rsi:.0f} above neutral, "
+                    f"{dist_ema21:+.1f}% above EMA21. Reduced size."
+                )
             else:
-                # Downtrend but no short setup — avoid longs, wait for bounce
-                action = Action.AVOID.value
+                # Downtrend but RSI too low or below EMA — wait for bounce
+                action = Action.WAIT.value
                 entry_signal = "NO_ENTRY"
-                reasoning = f"Downtrend ({momentum_6m:+.1f}% 6M). No short setup (RSI {rsi:.0f}). Wait."
+                reasoning = f"Downtrend ({momentum_6m:+.1f}% 6M). RSI {rsi:.0f} too low to short. Wait."
 
         # --- SHORT SIGNALS: Sideways regime near resistance ---
         # Tightened: RSI > 70 (was 65), dist_ema21 > 4% (was 3%)
@@ -1234,13 +1391,39 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
             )
 
         # --- LONG SIGNALS: existing logic enhanced ---
+        # Negative EV — not good for longs, but consider SHORT in weak regimes
         elif ev < 0:
-            action = Action.AVOID.value
-            entry_signal = "NEG_EV"
-            reasoning = f"Negative EV ({ev:.2f}%). Risk/reward unfavorable."
+            if regime in [Regime.DOWNTREND, Regime.SIDEWAYS] and rsi > 50:
+                action = Action.SHORT.value
+                entry_signal = "SHORT_NEG_EV"
+                short_stop = price + 2.0 * atr
+                target_1 = price - 2.0 * atr
+                target_2 = price - 3.5 * atr
+                buy_zone_low = target_2
+                buy_zone_high = target_1
+                stop_loss = short_stop
+                reasoning = f"SHORT: Negative EV ({ev:.2f}%) + {regime.value} regime, RSI {rsi:.0f}."
+            else:
+                action = Action.WAIT.value
+                entry_signal = "NEG_EV"
+                reasoning = f"Negative EV ({ev:.2f}%). Not shortable (RSI {rsi:.0f}, {regime.value}). Wait."
 
-        # WAIT: Overextended (lower thresholds for caution)
-        elif rsi >= 70 or dist_ema21 > 10:
+        # PARABOLIC/STRONG_UP momentum-following: RSI healthy + near EMA9 → BUY
+        elif (regime in [Regime.PARABOLIC, Regime.STRONG_UP]
+              and rsi < 80
+              and abs((price / ema9 - 1) * 100) < 3
+              and ev > 0 and rr > 1.0):
+            action = Action.BUY.value
+            entry_signal = "MOMENTUM_FOLLOW"
+            reasoning = (
+                f"Momentum follow ({regime.value}): RSI {rsi:.0f} healthy (<80), "
+                f"price near EMA9 ({(price/ema9-1)*100:+.1f}%), R:R {rr:.1f}x. "
+                f"Riding trend with tight stop."
+            )
+
+        # WAIT: Overextended — thresholds relaxed for PARABOLIC/STRONG_UP regimes
+        elif ((regime in [Regime.PARABOLIC, Regime.STRONG_UP] and (rsi >= 80 or dist_ema21 > 15))
+              or (regime not in [Regime.PARABOLIC, Regime.STRONG_UP] and (rsi >= 70 or dist_ema21 > 10))):
             action = Action.WAIT.value
             entry_signal = "OVEREXTENDED"
             reasoning = f"Overextended (RSI {rsi:.0f}, {dist_ema21:+.1f}% from EMA21). Wait for pullback."
@@ -1300,17 +1483,29 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
             entry_signal = "ABOVE_ZONE"
             reasoning = f"Above buy zone. Wait for pullback to ${buy_zone_high:.2f}."
 
-        # Score (for ranking) — enhanced for shorts
-        score = 50
+        # Score (for ranking) — fundamental base + technical signals
+        # Breakdown: Fundamental(50) + Momentum(20) + RSI(10) + MACD(10) + R:R(10) = 100
+        fundamental_score = get_fundamental_score(symbol)
+        base_pts = fundamental_score / 2  # Scale 0-100 → 0-50 pts
+
         if "SHORT" in action:
-            # Short scoring: reward high RSI in downtrend/sideways, penalize uptrend shorts
-            score += max(-20, momentum_6m / 3)  # More negative momentum = higher short score
-            score += 10 if rsi > 60 else (5 if rsi > 50 else -5)
-            score += min(10, abs(dist_ema21) * 2)  # Distance from EMA = near resistance
+            # Short: reward negative momentum, bearish MACD
+            mom_1w_pts = max(-5, min(5, -momentum_1w / 2))
+            mom_1m_pts = max(-7, min(7, -momentum_1m / 4))
+            mom_3m_pts = max(-8, min(8, -momentum_3m / 6))
+            rsi_pts = 10 if rsi > 60 else (5 if rsi > 50 else -5)
+            macd_pts = 10 if macd_cross_bearish else (5 if macd_histogram < 0 else 0)
         else:
-            score += min(20, momentum_6m / 5) if momentum_6m > 0 else max(-20, momentum_6m / 5)
-            score += 10 if 30 < rsi < 70 else -5
-            score += ev * 2
+            mom_1w_pts = max(-5, min(5, momentum_1w / 2))     # ±5 pts
+            mom_1m_pts = max(-7, min(7, momentum_1m / 4))      # ±7 pts
+            mom_3m_pts = max(-8, min(8, momentum_3m / 6))      # ±8 pts
+            rsi_pts = 10 if 30 < rsi < 70 else -5
+            macd_pts = 10 if macd_cross_bullish else (5 if macd_histogram > 0 else 0)
+
+        momentum_pts = mom_1w_pts + mom_1m_pts + mom_3m_pts  # ±20 pts total
+        rr_pts = min(10, max(0, (rr - 1) * 5))  # 1:1=0, 2:1=5, 3:1=10
+
+        score = base_pts + momentum_pts + rsi_pts + macd_pts + rr_pts
         score = max(0, min(100, score))
 
         # ── Technical Confidence Score ──
@@ -1357,10 +1552,16 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
             strategy=strategy.value,
             momentum_6m=momentum_6m,
             momentum_3m=momentum_3m,
+            momentum_1m=momentum_1m,
+            momentum_1w=momentum_1w,
             volatility=volatility,
             rsi=rsi,
             atr_pct=atr_pct,
             dist_ema21=dist_ema21,
+            macd_line=macd_line,
+            macd_signal=macd_signal_val,
+            macd_histogram=macd_histogram,
+            fundamental_score=fundamental_score,
             buy_zone_low=buy_zone_low,
             buy_zone_high=buy_zone_high,
             stop_loss=stop_loss,
