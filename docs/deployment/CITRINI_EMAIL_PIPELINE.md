@@ -10,8 +10,6 @@ Fetches new emails from `citrini@substack.com`, extracts trade ideas via LLM, an
 
 ## Deployment Options
 
-**→ For a step-by-step handoff to another AI:** see [CITRINI_EMAIL_AWS_EXECUTION_PLAN.md](CITRINI_EMAIL_AWS_EXECUTION_PLAN.md).
-
 ### Option A: Discord Bot on AWS (recommended)
 
 Use the interactive bot's built-in scheduler on the AWS instance.

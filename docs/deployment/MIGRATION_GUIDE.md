@@ -27,7 +27,7 @@ git clone <your-github-repo-url> trading_agent
 cd trading_agent
 
 # Checkout the feature branch
-git checkout feature/trading-system-v2
+git checkout expand-universe
 ```
 
 ---
@@ -221,18 +221,18 @@ python3 -c "import sys; print('\n'.join(sys.path))"
 git remote add origin <your-github-repo-url>
 
 # Push current branch
-git push -u origin feature/trading-system-v2
+git push -u origin expand-universe
 ```
 
 ### Regular Updates
 ```bash
 # Pull latest changes
-git pull origin feature/trading-system-v2
+git pull origin expand-universe
 
 # Push your changes
 git add .
 git commit -m "Your commit message"
-git push origin feature/trading-system-v2
+git push origin expand-universe
 ```
 
 ---
@@ -269,6 +269,6 @@ git push origin feature/trading-system-v2
 ## Need Help?
 
 Check these docs:
-- `docs/PROJECT_SOP.md` - Standard Operating Procedures
+- `docs/standards/CODE_STANDARDS.md` - Code Standards & Project Structure
 - `docs/SCANNER_CHANGELOG.md` - Scanner version history
 - `docs/LESSONS_LEARNED.md` - Accumulated trading insights

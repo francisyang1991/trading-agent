@@ -59,7 +59,7 @@ python backtest_runner.py --symbol AAPL --start 2025-01-01 --end 2026-01-01
 | [PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | Current capabilities and improvement roadmap |
 | [GCP_DEPLOYMENT.md](docs/GCP_DEPLOYMENT.md) | Google Cloud deployment guide |
 | [DEPLOYMENT_LESSONS.md](docs/DEPLOYMENT_LESSONS.md) | **Critical** - Cloud deployment troubleshooting guide |
-| [TRADING_SYSTEM_V2.md](docs/TRADING_SYSTEM_V2.md) | E2E testing and async architecture |
+| [PROJECT_REVIEW_NEXT_STEPS.md](docs/PROJECT_REVIEW_NEXT_STEPS.md) | Architecture review and migration roadmap |
 | [IBKR API Design](docs/IBKR%20API%20美股股票%2B期货程序化交易系统设计报告.md) | Comprehensive system design (Chinese) |
 
 ---
