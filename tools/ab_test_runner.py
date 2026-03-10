@@ -7,26 +7,16 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from pathlib import Path
-from typing import List, Dict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List
 
 import pandas as pd
-import yaml
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.tools.pattern_backtest import scan_symbol, clean_symbols
-from src.signals.entry.volume_pullback_entry import VolumePullbackEntrySignal, VolumePullbackConfig
-
-
-
-def load_universe(path: Path) -> List[str]:
-    with open(path, "r") as f:
-        universe = yaml.safe_load(f)
-    symbols = universe.get("all_symbols", [])
-    return clean_symbols(symbols)
+from src.signals.entry.volume_pullback_entry import VolumePullbackConfig
+from src.tools.ab_test_shared import load_universe, run_pattern_sweep
 
 
 def run_variant(
@@ -34,74 +24,31 @@ def run_variant(
     symbols: List[str],
     period: str,
     config: VolumePullbackConfig,
-    min_confidence: float,
-    include_wait: bool,
-    min_days_to_outcome: int,
-    score_full: float,
-    score_half: float,
-    score_quarter: float,
-    score_min: float,
-    earnings_window_days: int,
-    max_hold_bars: int,
-    fallback_win_gain: float,
-    fallback_loss: float,
-    max_workers: int,
+    args,
 ) -> Dict:
-    signal_gen = VolumePullbackEntrySignal(config=config)
-    patterns = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                scan_symbol,
-                s,
-                period,
-                signal_gen,
-                min_confidence,
-                5,
-                max_hold_bars,
-                include_wait,
-                0.0,
-                fallback_win_gain,
-                fallback_loss,
-                True,
-                score_full,
-                score_half,
-                score_quarter,
-                score_min,
-                earnings_window_days,
-                30,
-                False,
-                8.0,
-            ): s
-            for s in symbols
-        }
-        for future in as_completed(futures):
-            _, rows = future.result()
-            patterns.extend(rows)
-    filtered = [
-        p for p in patterns
-        if p.outcome in ("SUCCESS", "FAILURE") and p.days_to_outcome >= min_days_to_outcome
-    ]
-    total = len(filtered)
-    wins = sum(1 for p in filtered if p.outcome == "SUCCESS")
-    win_rate = (wins / total * 100) if total else 0.0
-    total_weight = sum(p.size_factor for p in filtered) or 0.0
-    weighted_win_rate = (
-        sum(p.size_factor for p in filtered if p.outcome == "SUCCESS") / total_weight * 100
-        if total_weight
-        else 0.0
-    )
-    weighted_ev = (
-        sum(p.weighted_outcome_pct for p in filtered) / total_weight
-        if total_weight
-        else 0.0
+    _, metrics = run_pattern_sweep(
+        symbols=symbols,
+        period=period,
+        config=config,
+        min_confidence=args.min_confidence,
+        min_days_to_outcome=args.min_days_to_outcome,
+        include_wait=args.include_wait,
+        max_hold_bars=args.max_hold_bars,
+        fallback_win_gain=args.fallback_win_gain,
+        fallback_loss=args.fallback_loss,
+        score_full=args.score_full,
+        score_half=args.score_half,
+        score_quarter=args.score_quarter,
+        score_min=args.score_min,
+        earnings_window_days=args.earnings_window_days,
+        max_workers=args.max_workers,
     )
     return {
         "variant": name,
-        "patterns": total,
-        "win_rate": round(win_rate, 2),
-        "weighted_win_rate": round(weighted_win_rate, 2),
-        "weighted_ev": round(weighted_ev, 2),
+        "patterns": metrics["total"],
+        "win_rate": metrics["win_rate"],
+        "weighted_win_rate": metrics["weighted_win_rate"],
+        "weighted_ev": metrics["weighted_ev"],
         "config": asdict(config),
     }
 
@@ -149,18 +96,7 @@ def main():
                 symbols=symbols,
                 period=args.period,
                 config=config,
-                min_confidence=args.min_confidence,
-                include_wait=args.include_wait,
-                min_days_to_outcome=args.min_days_to_outcome,
-                score_full=args.score_full,
-                score_half=args.score_half,
-                score_quarter=args.score_quarter,
-                score_min=args.score_min,
-                earnings_window_days=args.earnings_window_days,
-                max_hold_bars=args.max_hold_bars,
-                fallback_win_gain=args.fallback_win_gain,
-                fallback_loss=args.fallback_loss,
-                max_workers=args.max_workers,
+                args=args,
             )
         )
 

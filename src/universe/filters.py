@@ -270,6 +270,7 @@ def build_technical_base_from_prices(
     benchmark_return_252: float,
     near_52w_ratio: float = 0.85,
     min_bars: int = 260,
+    min_bars_recent_ipo: Optional[int] = 130,
     as_of_date: Optional["date"] = None,
 ) -> pd.DataFrame:
     """
@@ -279,12 +280,14 @@ def build_technical_base_from_prices(
         prices_by_symbol: {ticker: DataFrame with Close column}
         benchmark_return_252: SPY 252-day return for RS computation.
         near_52w_ratio: fraction of 52w high to qualify as "near high".
-        min_bars: minimum price bars required.
+        min_bars: minimum price bars required (full history).
+        min_bars_recent_ipo: allow symbols with 130+ bars (recent IPOs) — no 260 enforcement.
         as_of_date: if set, truncate each price series to this date
                     (for historical lookback with no lookahead).
     """
     import datetime as _dt
 
+    floor = min_bars_recent_ipo if min_bars_recent_ipo is not None else min_bars
     rows = []
     eval_date = as_of_date or pd.Timestamp.today().date()
 
@@ -299,14 +302,16 @@ def build_technical_base_from_prices(
                     df = df[df.index.date <= as_of_date]
 
             close = df["Close"]
-            if close is None or len(close) < min_bars:
+            n = len(close) if close is not None else 0
+            if close is None or n < floor:
                 continue
             price = float(close.iloc[-1])
-            ma200 = float(close.rolling(200).mean().iloc[-1])
-            high_52w = float(close.rolling(252).max().iloc[-1])
+            ma_period = min(200, n)
+            ma200 = float(close.rolling(ma_period).mean().iloc[-1])
+            high_52w = float(close.rolling(130).max().iloc[-1])
             if not pd.notna(ma200) or not pd.notna(high_52w) or high_52w <= 0:
                 continue
-            stock_ret_252 = float(close.iloc[-1] / close.iloc[-252] - 1)
+            stock_ret_252 = float(close.iloc[-1] / close.iloc[-130] - 1)
             rs_raw = stock_ret_252 - benchmark_return_252
             rows.append(
                 {

@@ -26,7 +26,7 @@ try:
     from ib_async.util import df
     IB_ASYNC_AVAILABLE = True
 except ImportError:
-    logger.warning("ib_async not installed. Install with: pip install ib_async")
+    pass  # Optional: ib_async only needed for live IBKR trading
     IB_ASYNC_AVAILABLE = False
     IB = Stock = Contract = Trade = BarData = Ticker = None
     MarketOrder = LimitOrder = StopOrder = Order = None

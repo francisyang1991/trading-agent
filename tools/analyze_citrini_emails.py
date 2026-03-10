@@ -19,6 +19,8 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
 from datetime import datetime
 import json
 import os
@@ -54,6 +56,19 @@ from src.email_analysis.gmail_reader import (
 
 def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _setup_logging(verbose: bool, log_file: str | None = None) -> None:
+    """Configure logging for full monitor output. Verbose enables DEBUG."""
+    level = logging.DEBUG if verbose else logging.INFO
+    fmt = "%(asctime)s | %(levelname)-8s | %(name)s - %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    logging.basicConfig(level=level, format=fmt, datefmt=datefmt, handlers=handlers, force=True)
+    for name in ("src.email_analysis", "src.email_analysis.gmail_reader", "src.email_analysis.email_trade_ideas"):
+        logging.getLogger(name).setLevel(level)
 
 
 def _render_markdown(
@@ -150,7 +165,7 @@ def main() -> None:
     parser.add_argument(
         "--model",
         default="",
-        help="Model name (default: glm-5 for zai, claude-3-5-sonnet-latest for anthropic).",
+        help="Model name (default: glm-4-plus for zai, claude-3-5-sonnet-latest for anthropic).",
     )
     parser.add_argument(
         "--output-json",
@@ -167,7 +182,11 @@ def main() -> None:
         action="store_true",
         help="Fetch emails and save raw output only (skip LLM analysis).",
     )
+    parser.add_argument("--verbose", "-v", action="store_true", help="Full monitor log (DEBUG level).")
+    parser.add_argument("--log-file", default="", help="Also write logs to this file.")
     args = parser.parse_args()
+
+    _setup_logging(args.verbose, args.log_file or None)
 
     if args.env_file:
         if load_dotenv is None:
@@ -234,7 +253,7 @@ def main() -> None:
         api_key = os.getenv("ZAI_API_KEY", "")
         if not api_key:
             raise SystemExit("ZAI_API_KEY is required unless --dry-run-fetch is used.")
-        model = args.model or "glm-5"
+        model = args.model or "glm-4-plus"
     else:
         api_key = os.getenv("ANTHROPIC_API_KEY", "")
         if not api_key:

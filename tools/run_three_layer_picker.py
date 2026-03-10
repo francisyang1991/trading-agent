@@ -13,6 +13,7 @@ Usage:
     python tools/run_three_layer_picker.py                  # default config
     python tools/run_three_layer_picker.py --config custom.yaml
     python tools/run_three_layer_picker.py --lookback       # enable lookback
+    python tools/run_three_layer_picker.py --fundamental-only   # skip technical layer (fundamentals only)
 """
 
 from __future__ import annotations
@@ -22,6 +23,10 @@ import os
 import subprocess
 import sys
 import time
+
+# Unbuffered stdout so intermediate progress prints appear immediately when piped or run non-interactively
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict
@@ -35,12 +40,12 @@ if str(ROOT) not in sys.path:
 
 from src.data.blacklist_store import DataBlacklistStore
 from src.data_manager import DataManager
-from src.data.providers.resilient import fallback_price_fetch
-from src.data.providers.yfinance_provider import YFinanceProvider, batch_download_daily_ohlcv
+from src.data.providers.yfinance_provider import YFinanceProvider
 from src.picker.fundamentals_service import FundamentalSnapshotService
 from src.picker.incremental_refresh import run as run_incremental_earnings_refresh
 from src.picker.lookback import compare_across_dates, run_picker_at_date
 from src.picker.post_processor import deduplicate_share_classes, diversify_by_industry
+from src.picker.price_loader import stage_load_prices
 from src.universe.filters import (
     build_technical_base_from_prices,
     fundamental_filter,
@@ -61,14 +66,6 @@ def load_config(path: Path) -> dict:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
-
-def _parse_ibkr_endpoint(endpoint: str):
-    try:
-        host, port = endpoint.split(":")
-        return host.strip(), int(port.strip())
-    except Exception:
-        return "127.0.0.1", 4002
-
 
 def _fetch_industry_map(tickers: list[str]) -> Dict[str, str]:
     """Lightweight: sector/industry from Yahoo .info."""
@@ -264,66 +261,7 @@ def _run_auto_earnings_refresh(
 
 
 # ── Pipeline stages ─────────────────────────────────────────────────────────
-
-def stage_load_prices(dm, symbols, cfg) -> Dict[str, pd.DataFrame]:
-    """Stage A-C: load cached prices, Yahoo bulk, fallback chain."""
-    data_cfg = cfg.get("data", {})
-    ibkr_cfg = cfg.get("ibkr", {})
-    period = data_cfg.get("period", "2y")
-
-    # A: cache
-    print("\n[A] Load cached prices")
-    t0 = time.time()
-    prices = dm.load_cached_prices(
-        symbols, period=period, min_bars=60,
-        progress_hook=lambda i, total, loaded: (
-            print(f"  [cache] {i}/{total} loaded={loaded}") if (i % 500 == 0 or i == total) else None
-        ),
-    )
-    missing = [s for s in symbols if s not in prices]
-    print(f"  cache={len(prices)} missing={len(missing)} ({time.time()-t0:.1f}s)")
-
-    # B: Yahoo bulk
-    if missing:
-        print("\n[B] Yahoo bulk fetch")
-        t1 = time.time()
-        yahoo = batch_download_daily_ohlcv(
-            symbols=missing, period=period,
-            batch_size=data_cfg.get("batch_size", 200),
-            threads=data_cfg.get("yf_threads", False),
-            progress_hook=lambda done, total: print(f"  [yahoo] {done}/{total}"),
-        )
-        prices.update(yahoo)
-        dm.persist_prices(yahoo, progress_hook=lambda i, t: (
-            print(f"  [persist] {i}/{t}") if (i % 500 == 0 or i == t) else None
-        ))
-        missing = [s for s in symbols if s not in prices]
-        print(f"  yahoo={len(yahoo)} missing={len(missing)} ({time.time()-t1:.1f}s)")
-
-    # C: Fallback (IBKR GCloud -> local -> Stooq)
-    if missing:
-        print(f"\n[C] Fallback for {len(missing)} remaining")
-        t2 = time.time()
-        ib_host, ib_port = _parse_ibkr_endpoint(ibkr_cfg.get("local_gateway_url", "127.0.0.1:4002"))
-        fallback = {}
-        for i, sym in enumerate(missing, 1):
-            data, _ = fallback_price_fetch(
-                symbol=sym, period=period,
-                gcloud_base_url=ibkr_cfg.get("gcloud_trade_api_url", "").rstrip("/"),
-                gcloud_api_key=ibkr_cfg.get("gcloud_trade_api_key", ""),
-                local_ibkr_host=ib_host, local_ibkr_port=ib_port,
-                local_ibkr_client_id=ibkr_cfg.get("local_client_id", 99),
-            )
-            if data is not None and not data.empty:
-                prices[sym] = data
-                fallback[sym] = data
-            if i % 100 == 0 or i == len(missing):
-                print(f"  [fallback] {i}/{len(missing)}")
-        if fallback:
-            dm.persist_prices(fallback)
-        print(f"  resolved={len(fallback)} ({time.time()-t2:.1f}s)")
-
-    return prices
+# stage_load_prices imported from src.picker.price_loader
 
 
 def stage_technical(prices, spy_df, cfg) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -336,6 +274,7 @@ def stage_technical(prices, spy_df, cfg) -> tuple[pd.DataFrame, pd.DataFrame]:
         prices, benchmark_return_252=spy_ret,
         near_52w_ratio=tech_cfg.get("near_52w_ratio", 0.85),
         min_bars=tech_cfg.get("min_bars", 260),
+        min_bars_recent_ipo=tech_cfg.get("min_bars_recent_ipo", 130),
     )
     tech = technical_filter(base, rs_threshold=tech_cfg.get("rs_threshold", 80.0))
     return base, tech
@@ -460,6 +399,7 @@ def run(
     cfg: dict,
     enable_lookback: bool = False,
     rebuild_historical_cache: bool = False,
+    fundamental_only: bool = False,
     config_path: Path = DEFAULT_CONFIG,
 ) -> None:
     t_global = time.time()
@@ -473,52 +413,72 @@ def run(
     fund_svc = FundamentalSnapshotService(dm)
 
     # Load universe
+    t0 = time.time()
+    print("\n[Universe] Loading listed symbols...")
     symbols = load_all_listed_us_symbols()
     max_sym = data_cfg.get("max_symbols", 0)
     if max_sym > 0:
         symbols = symbols[:max_sym]
     blacklist = blacklist_store.load()
     symbols = [s for s in symbols if s not in blacklist]
-    print(f"Universe: {len(symbols)} symbols ({len(blacklist)} blacklisted)")
+    print(f"  [Universe] {len(symbols)} symbols ({len(blacklist)} blacklisted) ({time.time()-t0:.1f}s)")
 
     # Embedded DQ gate: run automatically so users do not need manual pre-checks.
-    _run_cache_preflight(cfg, symbols, out_dir)
+    # Skip preflight in fundamental-only mode (no technical filter; universe may be large).
+    if not fundamental_only:
+        _run_cache_preflight(cfg, symbols, out_dir)
 
-    # A-C: Price ingestion
+    # A-C: Price ingestion (uses cache first, then Yahoo for missing)
+    t1 = time.time()
+    print("\n[Stage 1/3] Price load (cache -> Yahoo -> fallback)")
     prices = stage_load_prices(dm, symbols, cfg)
+    print(f"  [A-C] Price load: {len(prices)}/{len(symbols)} symbols ({time.time()-t1:.1f}s)")
 
-    # SPY benchmark
-    spy = prices.get("SPY")
-    if spy is None or spy.empty:
-        spy = dm.get_daily_data("SPY", period=data_cfg.get("period", "2y"))
-    if spy is None or spy.empty:
-        raise RuntimeError("SPY data unavailable")
-    if "Date" in spy.columns:
-        spy = spy.set_index(pd.to_datetime(spy["Date"]))
-    elif not isinstance(spy.index, pd.DatetimeIndex):
-        spy.index = pd.to_datetime(spy.index)
+    # D: Technical (skipped in fundamental-only mode)
+    if fundamental_only:
+        # Pure fundamental mode: no RS, near 52w, or other technical checks.
+        # Use all symbols with price data; rs_rank=50 (neutral) for composite scoring.
+        tech = pd.DataFrame({"ticker": list(prices.keys())})
+        tech["rs_rank"] = 50.0
+        base = tech.copy()
+        print("\n[D] Fundamental-only mode: skipping technical filter")
+        print(f"  symbols with price data={len(tech)}")
+    else:
+        # SPY benchmark (needed for technical filter)
+        spy = prices.get("SPY")
+        if spy is None or spy.empty:
+            spy = dm.get_daily_data("SPY", period=data_cfg.get("period", "2y"))
+        if spy is None or spy.empty:
+            raise RuntimeError("SPY data unavailable")
+        if "Date" in spy.columns:
+            spy = spy.set_index(pd.to_datetime(spy["Date"]))
+        elif not isinstance(spy.index, pd.DatetimeIndex):
+            spy.index = pd.to_datetime(spy.index)
 
-    # D: Technical
-    print("\n[D] Technical filter")
-    base, tech = stage_technical(prices, spy, cfg)
-    print(f"  base={len(base)} technical={len(tech)}")
+        print("\n[D] Technical filter")
+        base, tech = stage_technical(prices, spy, cfg)
+        print(f"  base={len(base)} technical={len(tech)}")
+
     tech.to_csv(out_dir / "three_layer_after_technical.csv", index=False)
 
     # D.5: Auto earnings refresh before fundamentals (no manual command required).
+    t2 = time.time()
     _run_auto_earnings_refresh(
         cfg=cfg,
         technical_tickers=tech["ticker"].astype(str).tolist() if "ticker" in tech.columns else [],
         out_dir=out_dir,
         config_path=config_path,
     )
+    print(f"  [D.5] Earnings refresh: {time.time()-t2:.1f}s")
 
     # E: Fundamentals
-    print("\n[E] Fundamental enrichment + filter")
+    t3 = time.time()
+    print("\n[Stage 2/3] Fundamental enrichment + filter")
     quality = stage_fundamentals(tech, fund_svc, cfg, out_dir)
-    print(f"  quality picks={len(quality)}")
+    print(f"  quality picks={len(quality)} ({time.time()-t3:.1f}s)")
 
     # F: Post-process
-    print("\n[F] Post-process (dedup + diversify)")
+    print("\n[Stage 3/3] Post-process (dedup + diversify)")
     final = stage_post_process(quality, cfg)
     print(f"  final diversified={len(final)}")
 
@@ -538,8 +498,8 @@ def run(
             f"ROE {r['roe']*100:5.1f}%  Score {r.get('composite', 0):6.1f}"
         )
 
-    # G: Lookback (optional)
-    if enable_lookback or cfg.get("lookback", {}).get("enabled", False):
+    # G: Lookback (optional; not supported in fundamental-only mode)
+    if (enable_lookback or cfg.get("lookback", {}).get("enabled", False)) and not fundamental_only:
         print("\n[G] Historical lookback comparison")
         refresh_historical = rebuild_historical_cache or bool(cfg.get("lookback", {}).get("refresh_snapshot_cache", False))
         comparison = stage_lookback(
@@ -568,6 +528,11 @@ if __name__ == "__main__":
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Config YAML path")
     parser.add_argument("--lookback", action="store_true", help="Enable historical lookback")
     parser.add_argument(
+        "--fundamental-only",
+        action="store_true",
+        help="Skip technical layer (RS, near 52w); output symbols meeting fundamental criteria only",
+    )
+    parser.add_argument(
         "--rebuild-historical-cache",
         action="store_true",
         help="Recompute and overwrite historical fundamental snapshot cache files",
@@ -579,5 +544,6 @@ if __name__ == "__main__":
         cfg,
         enable_lookback=args.lookback,
         rebuild_historical_cache=args.rebuild_historical_cache,
+        fundamental_only=args.fundamental_only,
         config_path=Path(args.config),
     )

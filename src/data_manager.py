@@ -508,9 +508,8 @@ class DataManager:
         """Load daily data from database."""
         conn = self.get_connection()
         
-        # Calculate date range based on period
-        days_map = {'1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '2y': 730, '5y': 1825}
-        days = days_map.get(period, 365)
+        # Calculate date range based on period (align with _period_to_days)
+        days = self._period_to_days(period)
         start_date = (datetime.now() - timedelta(days=days)).date()
         
         query = """
@@ -849,6 +848,32 @@ class DataManager:
         print(f"   ✅ Loaded {len(results)} symbols")
         return results
 
+    def _batch_metadata_ok(self, symbols: List[str]) -> set:
+        """Batch check which symbols have fresh metadata (one query)."""
+        if not symbols:
+            return set()
+        td = self.max_daily_age
+        if td.days >= 1:
+            modifier = f"-{td.days} days"
+        else:
+            hours = td.seconds // 3600 or 1
+            modifier = f"-{hours} hours"
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        placeholders = ",".join("?" * len(symbols))
+        cursor.execute(
+            f"""
+            SELECT symbol FROM data_metadata
+            WHERE symbol IN ({placeholders})
+              AND daily_last_updated IS NOT NULL
+              AND datetime(daily_last_updated) > datetime('now', ?)
+            """,
+            [str(s).upper() for s in symbols] + [modifier],
+        )
+        ok = {str(row[0]).upper() for row in cursor.fetchall()}
+        conn.close()
+        return ok
+
     def load_cached_prices(
         self,
         symbols: List[str],
@@ -864,12 +889,15 @@ class DataManager:
         """
         out: Dict[str, pd.DataFrame] = {}
         total = len(symbols)
-        for idx, symbol in enumerate(symbols, 1):
+        symbols_u = [str(s).upper() for s in symbols]
+        metadata_ok = self._batch_metadata_ok(symbols_u)
+        for idx, symbol_u in enumerate(symbols_u, 1):
             try:
-                symbol_u = str(symbol).upper()
-
-                # If stale or insufficient coverage, skip so caller can refresh in bulk.
-                if self._needs_daily_refresh(symbol_u) or self._needs_daily_coverage(symbol_u, period):
+                if symbol_u not in metadata_ok:
+                    if progress_hook:
+                        progress_hook(idx, total, len(out))
+                    continue
+                if self._needs_daily_coverage(symbol_u, period):
                     if progress_hook:
                         progress_hook(idx, total, len(out))
                     continue

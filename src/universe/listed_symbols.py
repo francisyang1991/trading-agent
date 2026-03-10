@@ -18,8 +18,16 @@ def _is_valid_ticker(symbol: str) -> bool:
 
 
 def _is_probable_common_stock(symbol: str) -> bool:
+    """Exclude SPAC units, rights, warrants, and other non-common securities."""
     s = symbol.upper()
-    return not s.endswith((".W", ".U", ".R", "-W", "-U", "-R"))
+    # Exclude dot/dash suffixed (e.g. .W, .U, .R, -W, -U, -R)
+    if s.endswith((".W", ".U", ".R", "-W", "-U", "-R")):
+        return False
+    # Exclude 5-char SPAC units/rights/warrants (e.g. AACBU, AACBR, AACBW)
+    # Nasdaq convention: base ticker + U/R/W suffix = units/rights/warrants
+    if len(s) == 5 and s[-1] in ("U", "R", "W"):
+        return False
+    return True
 
 
 def _fetch_nasdaq_trader_table(url: str) -> pd.DataFrame:

@@ -1,0 +1,55 @@
+# =============================================================================
+# Three-Layer Stock Picker - Tuned for >65% Win Rate
+# =============================================================================
+# Uses stricter filters + top 15 picks for higher quality.
+# Run walk-forward with --months-back 3,6 (recent windows only).
+
+data:
+  period: "2y"
+  batch_size: 200
+  yf_threads: false
+  max_symbols: 0
+
+preflight:
+  enabled: false
+
+earnings_refresh:
+  enabled: false
+
+technical:
+  rs_threshold: 75.0                # Stricter than relaxed (70)
+  near_52w_ratio: 0.82             # Stricter than relaxed (0.80)
+  min_bars: 130
+
+fundamental:
+  min_eps_yoy: 0.15                # Stricter than relaxed (0.10)
+  min_revenue_growth: 0.08         # Stricter than relaxed (0.05)
+  min_revenue_acceleration: null
+  require_surprise_non_negative: false
+
+quality:
+  min_roe: 0.08                     # Stricter than relaxed (0.05)
+  min_gm_rank: 50.0                # Stricter than relaxed (40)
+  max_debt_to_equity: 1.4          # Stricter than relaxed (1.5)
+
+scoring:
+  rs_rank_weight: 0.35
+  eps_yoy_weight: 0.20
+  revenue_growth_weight: 0.20
+  gm_rank_weight: 0.15
+  roe_weight: 0.10
+
+post_process:
+  deduplicate_share_classes: true
+  max_per_industry: 3
+  top_n: 15                        # Focus on best 15
+
+lookback:
+  enabled: true
+  months_back: [3, 6]
+  refresh_snapshot_cache: false
+  skip_missing_yoy_checks: true
+  skip_in_downtrend: true
+
+output:
+  dir: "results/picker"

@@ -8,6 +8,7 @@ and formats for Discord. Tracks processed message IDs to avoid re-sending.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,6 +29,8 @@ DEFAULT_SENDER = "citrini@substack.com"
 DEFAULT_PROCESSED_FILE = "data/email/citrini_processed.json"
 DEFAULT_CLIENT_SECRET = "secret/client_secret_75860045039-mgs0h9aai4488pokfqgsqlb1doo41eh4.apps.googleusercontent.com.json"
 DEFAULT_TOKEN_PATH = "token.json"
+
+logger = logging.getLogger(__name__)
 
 
 def _load_processed_ids(processed_path: Path) -> set[str]:
@@ -106,18 +109,26 @@ def run_citrini_email_check(
     client_secret = root / client_secret_path
     token_file = root / token_path
 
+    logger.info("=== Citrini email check started ===")
+    logger.info("sender=%s limit=%d unseen_only=%s llm_provider=%s", sender, limit, unseen_only, llm_provider)
+    logger.info("processed_file=%s client_secret=%s", processed_file, client_secret)
+
     if not client_secret.exists():
+        logger.error("Gmail client secret not found: %s", client_secret)
         return [], f"Gmail client secret not found: {client_secret}"
 
     try:
+        logger.info("Building Gmail service...")
         service = build_gmail_service(
             client_secret_path=str(client_secret),
             token_path=str(token_file),
             scopes=GMAIL_READONLY_SCOPES,
         )
     except Exception as e:
+        logger.exception("Gmail auth failed")
         return [], f"Gmail auth failed: {e}"
 
+    logger.info("Fetching emails from Gmail...")
     emails = fetch_gmail_emails_from_sender(
         service=service,
         sender_email=sender,
@@ -127,13 +138,20 @@ def run_citrini_email_check(
     )
 
     processed = _load_processed_ids(processed_file)
+    logger.info("Loaded %d previously processed message ID(s)", len(processed))
+    logger.info("Fetched %d total email(s) from Gmail", len(emails))
+    for doc in emails:
+        logger.debug("  Email: gmail_id=%s subject=%r", doc.gmail_id, (doc.subject or "")[:50])
+
     new_emails: List[EmailDocument] = []
     for doc in emails:
         mid = doc.gmail_id or doc.message_id or doc.uid
         if mid not in processed:
             new_emails.append(doc)
 
+    logger.info("After filtering: %d new (unprocessed) email(s) to analyze", len(new_emails))
     if not new_emails:
+        logger.info("No new emails to process. Exiting.")
         return [], None
 
     if llm_provider == "zai":
@@ -141,20 +159,26 @@ def run_citrini_email_check(
     else:
         api_key = llm_api_key or os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
+        logger.error("API key required for %s", llm_provider)
         return [], f"{'ZAI' if llm_provider == 'zai' else 'ANTHROPIC'}_API_KEY required"
 
     try:
+        logger.info("Running LLM analysis on %d email(s)...", len(new_emails))
         analyses = analyze_emails_with_llm(
             emails=new_emails,
             provider=llm_provider,
             api_key=api_key,
         )
     except Exception as e:
+        logger.exception("LLM analysis failed")
         return [], f"LLM analysis failed: {e}"
 
+    logger.info("LLM analysis complete: %d analysis(es)", len(analyses))
     for doc in new_emails:
         processed.add(doc.gmail_id or doc.message_id or doc.uid)
     _save_processed_ids(processed_file, processed)
+    logger.info("Saved %d processed ID(s) to %s", len(processed), processed_file)
 
     messages = _format_trade_ideas_for_discord(analyses)
+    logger.info("Formatted %d Discord message(s). === Citrini email check complete ===", len(messages))
     return messages, None

@@ -1,0 +1,69 @@
+ib_gateway:
+  host: 127.0.0.1
+  port: 4002
+  client_id: 21
+  readonly: false
+  reconnect_delay: 5
+  max_reconnect_attempts: 10
+  heartbeat_interval: 30
+  connection_timeout: 30
+  requests_per_second: 45
+runtime:
+  timezone: US/Eastern
+  loop_interval_seconds: 5
+  signal_cooldown_seconds: 60
+  force_flatten_time: '15:55'
+  output_base_dir: outputs
+watchlist:
+  symbols:
+  - AAPL
+  - MSFT
+  - NVDA
+session_windows:
+  reduce_only:
+  - start: 09:30
+    end: '10:00'
+  main:
+  - start: '10:00'
+    end: '11:30'
+  - start: '13:30'
+    end: '15:00'
+  midday_half_size:
+  - start: '11:30'
+    end: '13:30'
+strategy:
+  min_bars_for_signal: 30
+  zscore_entry_buy: -2.8
+  zscore_entry_sell: 2.8
+  zscore_exit_to_mean: 1.0
+  rolling_std_window: 20
+  atr_window: 14
+  atr_stop_multiplier: 1.2
+execution:
+  order_type: limit
+  limit_offset_bps: 3
+  order_timeout_seconds: 20
+  commission_bps: 1.0
+  slippage_bps: 1.5
+risk:
+  core_target_pct: 0.8
+  satellite_max_pct_of_core: 0.5
+  risk_per_trade_pct: 0.01
+  daily_loss_limit_pct: 0.02
+  max_notional_per_trade_pct: 0.08
+  min_trade_shares: 1
+pdt:
+  enforce_pdt_guard: true
+  min_equity_for_unlimited_daytrade: 25000
+  max_day_trades_under_25k: 3
+reporting:
+  write_signals_csv: true
+  write_trades_csv: true
+  write_metrics_csv: true
+  write_daily_report: true
+replay:
+  min_bars_between_trades: 10
+  min_hold_bars: 6
+  max_trades_per_day: 8
+  min_vwap_distance_bps: 55.0
+  min_entry_rvol: 1.0

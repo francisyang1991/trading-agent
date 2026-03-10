@@ -6,8 +6,10 @@ This module provides:
 - Advanced fundamental analysis (ROIC, FCF, Piotroski, Altman Z)
 - Recovery pattern detection (drawdown + bounce)
 - Theme categorization
+- Universe config loading (stock_universe.yaml)
 """
 
+from .universe_config import load_stock_universe
 from .universe_manager import (
     UniverseManager,
     get_all_us_stocks,
@@ -39,6 +41,7 @@ from .fundamentals import (
 )
 
 __all__ = [
+    'load_stock_universe',
     'UniverseManager',
     'get_all_us_stocks',
     'get_tradable_universe',

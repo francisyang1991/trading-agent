@@ -1,0 +1,43 @@
+# Docker Compose override for LIVE (production) mode
+# Uses separate credentials from env.live.list
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.live.yaml --profile gateway up -d
+#   docker compose -f docker-compose.yaml -f docker-compose.live.yaml --profile full up -d
+#
+# Prerequisites:
+#   1. Copy env.live.example to env.live.list
+#   2. Fill in your LIVE IBKR username and password in env.live.list
+
+services:
+  ib-gateway:
+    env_file:
+      - env.live.list
+    environment:
+      - TWS_USERID=${IB_USERNAME}
+      - TWS_PASSWORD=${IB_PASSWORD}
+      - TRADING_MODE=live
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/4001' 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  trading-agent:
+    env_file:
+      - env.live.list
+    environment:
+      - IB_HOST=ib-gateway
+      - IB_PORT=4001
+      - IB_CLIENT_ID=1
+      - IB_TRADING_MODE=live
+
+  discord-bot:
+    env_file:
+      - env.live.list
+    environment:
+      - IB_HOST=ib-gateway
+      - IB_PORT=4001
+      - IB_CLIENT_ID=50
+      - IB_TRADING_MODE=live

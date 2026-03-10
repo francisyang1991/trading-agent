@@ -8,7 +8,10 @@ This module is intentionally provider-light:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, field
+
+logger = logging.getLogger(__name__)
 from datetime import date, datetime, timedelta, timezone
 from email import header as email_header
 from email import message_from_bytes
@@ -211,6 +214,10 @@ def fetch_emails_from_sender(
     if limit <= 0:
         return []
 
+    logger.info(
+        "Fetching IMAP emails: sender=%s limit=%d unseen_only=%s since_days=%s",
+        sender_email, limit, unseen_only, since_days,
+    )
     search_tokens: List[str] = [f'FROM "{sender_email}"']
     if unseen_only:
         search_tokens.append("UNSEEN")
@@ -233,9 +240,11 @@ def fetch_emails_from_sender(
 
         status, data = imap_client.search(None, search_criteria)
         if status != "OK" or not data:
+            logger.info("IMAP search returned no messages")
             return []
 
         all_uids = data[0].split()
+        logger.info("IMAP search returned %d message(s)", len(all_uids))
         selected = list(reversed(all_uids[-limit:]))
 
         docs: List[EmailDocument] = []
@@ -282,6 +291,7 @@ def fetch_emails_from_sender(
                     body_text=body_text,
                 )
             )
+        logger.info("Returning %d email(s) from IMAP fetch", len(docs))
         return docs
     finally:
         if imap_client is not None:
@@ -322,8 +332,11 @@ def _extract_text_from_openai_compatible_response(response: Any) -> str:
             msg = getattr(choices[0], "message", None)
             if msg:
                 content = getattr(msg, "content", None)
-                if content is not None:
+                if content is not None and str(content).strip():
                     return str(content).strip()
+                reasoning = getattr(msg, "reasoning_content", None)
+                if reasoning is not None and str(reasoning).strip():
+                    return str(reasoning).strip()
     except (IndexError, AttributeError, TypeError):
         pass
     return ""
@@ -349,6 +362,114 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
         if isinstance(data, dict):
             return data
     raise ValueError("LLM response does not contain a valid JSON object.")
+
+
+def _parse_glm_text_output(text: str) -> Dict[str, Any]:
+    """Parse structured text output from GLM models into JSON format."""
+    trade_ideas: List[Dict[str, Any]] = []
+    seen_tickers = set()
+    
+    ticker_pattern = re.compile(r'\*\*([^*]+)\s*\(([^)]+)\)\*\*\s*[-–]\s*(Long|Short|Watchlist)', re.IGNORECASE)
+    thesis_pattern = re.compile(r'Thesis:\s*(.+?)(?=\n\s*[-–]|\n\s*\d+\.|\n\s*$|\Z)', re.IGNORECASE | re.DOTALL)
+    catalyst_pattern = re.compile(r'Catalyst:\s*(.+?)(?=\n\s*[-–]|\n\s*\d+\.|\n\s*$|\Z)', re.IGNORECASE | re.DOTALL)
+    risks_pattern = re.compile(r'Risks?:\s*(.+?)(?=\n\s*[-–]|\n\s*\d+\.|\n\s*$|\Z)', re.IGNORECASE | re.DOTALL)
+    
+    simple_pattern = re.compile(r'\b([A-Z]{1,5})\s+(puts?|calls?|long|short)\b', re.IGNORECASE)
+    trade_idea_pattern = re.compile(r'Trade Idea[s]?\s*\d*:\s*([A-Z]{1,5})', re.IGNORECASE)
+    
+    blocks = re.split(r'\n(?=\d+\.\s*\*\*)', text)
+    
+    for block in blocks:
+        if not block.strip():
+            continue
+        
+        ticker_match = ticker_pattern.search(block)
+        if ticker_match:
+            company_name = ticker_match.group(1).strip()
+            ticker = ticker_match.group(2).strip().upper()
+            direction_raw = ticker_match.group(3).strip().lower()
+            
+            direction = direction_raw
+            if direction == "watchlist":
+                direction = "watchlist"
+            elif "long" in direction:
+                direction = "long"
+            elif "short" in direction:
+                direction = "short"
+            
+            thesis_match = thesis_pattern.search(block)
+            thesis = thesis_match.group(1).strip() if thesis_match else ""
+            thesis = re.sub(r'\s+', ' ', thesis).strip()
+            
+            catalyst_match = catalyst_pattern.search(block)
+            catalyst = catalyst_match.group(1).strip() if catalyst_match else ""
+            catalyst = re.sub(r'\s+', ' ', catalyst).strip()
+            
+            risks_match = risks_pattern.search(block)
+            risks: List[str] = []
+            if risks_match:
+                risks_text = risks_match.group(1).strip()
+                risks = [r.strip() for r in re.split(r'[,;]', risks_text) if r.strip()]
+            
+            if ticker not in seen_tickers:
+                seen_tickers.add(ticker)
+                trade_ideas.append({
+                    "ticker": ticker,
+                    "direction": direction,
+                    "thesis": thesis,
+                    "catalyst": catalyst,
+                    "risks": risks,
+                    "time_horizon": "unspecified",
+                    "confidence": 0.5,
+                    "source_quote": f"{company_name} ({ticker})"
+                })
+    
+    for match in simple_pattern.finditer(text):
+        ticker = match.group(1).upper()
+        instrument = match.group(2).lower()
+        if ticker not in seen_tickers and len(ticker) >= 2:
+            seen_tickers.add(ticker)
+            direction = "short" if "put" in instrument else "long" if "call" in instrument else instrument
+            trade_ideas.append({
+                "ticker": ticker,
+                "direction": direction,
+                "thesis": f"Position mentioned: {match.group(0)}",
+                "catalyst": "",
+                "risks": [],
+                "time_horizon": "unspecified",
+                "confidence": 0.3,
+                "source_quote": match.group(0)
+            })
+    
+    for match in trade_idea_pattern.finditer(text):
+        ticker = match.group(1).upper()
+        if ticker not in seen_tickers:
+            seen_tickers.add(ticker)
+            trade_ideas.append({
+                "ticker": ticker,
+                "direction": "unknown",
+                "thesis": "Trade idea mentioned in analysis",
+                "catalyst": "",
+                "risks": [],
+                "time_horizon": "unspecified",
+                "confidence": 0.3,
+                "source_quote": match.group(0)
+            })
+    
+    sentiment = "mixed"
+    if re.search(r'\b(bullish|bull\s|long\b)', text, re.IGNORECASE):
+        sentiment = "bullish"
+    elif re.search(r'\b(bearish|bear\s|short\b)', text, re.IGNORECASE):
+        sentiment = "bearish"
+    
+    summary_match = re.search(r'^(?:This is a )?(.+?)(?:\n|\. Let me)', text)
+    summary = summary_match.group(1).strip() if summary_match else text[:200].strip()
+    
+    return {
+        "summary": summary,
+        "overall_sentiment": sentiment,
+        "trade_ideas": trade_ideas
+    }
 
 
 def _sanitize_trade_idea(raw: Dict[str, Any]) -> TradeIdea:
@@ -401,13 +522,16 @@ def analyze_emails_with_anthropic(
 
     client = Anthropic(api_key=api_key)
     analyses: List[EmailAnalysis] = []
+    email_list = list(emails)
+    logger.info("Starting Anthropic LLM analysis: %d email(s), model=%s", len(email_list), model)
 
     system_prompt = (
         "You are an equity research analyst. Read one newsletter email and extract concrete trade ideas. "
         "Do not fabricate symbols or facts. If no trade ideas are present, return an empty list."
     )
 
-    for email_doc in emails:
+    for idx, email_doc in enumerate(email_list):
+        logger.info("Analyzing email %d/%d: subject=%r", idx + 1, len(email_list), (email_doc.subject or "")[:60])
         email_payload = format_email_for_llm(email_doc)
         user_prompt = (
             "Extract any trade idea(s) from this email.\n\n"
@@ -432,6 +556,7 @@ def analyze_emails_with_anthropic(
             f"{email_payload}"
         )
 
+        logger.debug("Calling Anthropic API for email %d/%d", idx + 1, len(email_list))
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
@@ -440,6 +565,7 @@ def analyze_emails_with_anthropic(
             messages=[{"role": "user", "content": user_prompt}],
         )
         raw_output = _extract_text_from_anthropic_response(response)
+        logger.debug("LLM raw output length=%d, preview=%s", len(raw_output), (raw_output[:200] + "...") if len(raw_output) > 200 else raw_output)
         parsed = _extract_json_object(raw_output)
 
         raw_ideas = parsed.get("trade_ideas") or []
@@ -449,6 +575,15 @@ def analyze_emails_with_anthropic(
                 if isinstance(item, dict):
                     trade_ideas.append(_sanitize_trade_idea(item))
 
+        logger.info(
+            "Email %d/%d parsed: summary=%r sentiment=%s trade_ideas=%d",
+            idx + 1, len(email_list),
+            (str(parsed.get("summary") or "")[:50] + "...") if len(str(parsed.get("summary") or "")) > 50 else (parsed.get("summary") or ""),
+            parsed.get("overall_sentiment") or "unclear",
+            len(trade_ideas),
+        )
+        for ti in trade_ideas:
+            logger.debug("  Trade idea: %s %s conf=%.2f thesis=%r", ti.ticker, ti.direction, ti.confidence, (ti.thesis or "")[:80])
         analyses.append(
             EmailAnalysis(
                 uid=email_doc.uid,
@@ -463,17 +598,18 @@ def analyze_emails_with_anthropic(
             )
         )
 
+    logger.info("Anthropic analysis complete: %d analysis(es)", len(analyses))
     return analyses
 
 
 def analyze_emails_with_zai(
     *,
     emails: Iterable[EmailDocument],
-    model: str = "glm-5",
-    max_tokens: int = 1400,
+    model: str = "glm-4-plus",
+    max_tokens: int = 4096,
     temperature: float = 0.0,
     api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
+    zai_base_url: Optional[str] = None,
 ) -> List[EmailAnalysis]:
     """Analyze emails using Z.AI (GLM) chat completion API."""
     try:
@@ -489,17 +625,21 @@ def analyze_emails_with_zai(
         raise RuntimeError("ZAI_API_KEY is required for Z.AI email analysis.")
 
     kwargs: Dict[str, Any] = {"api_key": api_key}
-    if base_url:
-        kwargs["base_url"] = base_url
+    if zai_base_url:
+        kwargs["base_url"] = zai_base_url
     client = ZaiClient(**kwargs)
     analyses: List[EmailAnalysis] = []
+    email_list = list(emails)
+    logger.info("Starting Z.AI LLM analysis: %d email(s), model=%s", len(email_list), model)
 
     system_prompt = (
         "You are an equity research analyst. Read one newsletter email and extract concrete trade ideas. "
-        "Do not fabricate symbols or facts. If no trade ideas are present, return an empty list."
+        "Do not fabricate symbols or facts. If no trade ideas are present, return an empty list. "
+        "IMPORTANT: Output ONLY valid JSON, no explanation or reasoning before or after."
     )
 
-    for email_doc in emails:
+    for idx, email_doc in enumerate(email_list):
+        logger.info("Analyzing email %d/%d: subject=%r", idx + 1, len(email_list), (email_doc.subject or "")[:60])
         email_payload = format_email_for_llm(email_doc)
         user_prompt = (
             "Extract any trade idea(s) from this email.\n\n"
@@ -524,6 +664,7 @@ def analyze_emails_with_zai(
             f"{email_payload}"
         )
 
+        logger.debug("Calling Z.AI API for email %d/%d", idx + 1, len(email_list))
         response = client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
@@ -533,8 +674,20 @@ def analyze_emails_with_zai(
                 {"role": "user", "content": user_prompt},
             ],
         )
+        logger.debug("LLM response object type: %s", type(response).__name__)
+        logger.debug("LLM response: %s", response)
         raw_output = _extract_text_from_openai_compatible_response(response)
-        parsed = _extract_json_object(raw_output)
+        logger.debug("LLM raw output length=%d, preview=%s", len(raw_output), (raw_output[:200] + "...") if len(raw_output) > 200 else raw_output)
+        parsed = None
+        try:
+            parsed = _extract_json_object(raw_output)
+        except (ValueError, json.JSONDecodeError):
+            logger.info("JSON not found or malformed, attempting to parse GLM text output")
+            parsed = _parse_glm_text_output(raw_output)
+        
+        if not parsed or not parsed.get("trade_ideas"):
+            logger.warning("No trade ideas extracted, creating empty result")
+            parsed = parsed or {"summary": "", "overall_sentiment": "unclear", "trade_ideas": []}
 
         raw_ideas = parsed.get("trade_ideas") or []
         trade_ideas: List[TradeIdea] = []
@@ -543,6 +696,15 @@ def analyze_emails_with_zai(
                 if isinstance(item, dict):
                     trade_ideas.append(_sanitize_trade_idea(item))
 
+        logger.info(
+            "Email %d/%d parsed: summary=%r sentiment=%s trade_ideas=%d",
+            idx + 1, len(email_list),
+            (str(parsed.get("summary") or "")[:50] + "...") if len(str(parsed.get("summary") or "")) > 50 else (parsed.get("summary") or ""),
+            parsed.get("overall_sentiment") or "unclear",
+            len(trade_ideas),
+        )
+        for ti in trade_ideas:
+            logger.debug("  Trade idea: %s %s conf=%.2f thesis=%r", ti.ticker, ti.direction, ti.confidence, (ti.thesis or "")[:80])
         analyses.append(
             EmailAnalysis(
                 uid=email_doc.uid,
@@ -557,6 +719,7 @@ def analyze_emails_with_zai(
             )
         )
 
+    logger.info("Z.AI analysis complete: %d analysis(es)", len(analyses))
     return analyses
 
 
@@ -565,7 +728,7 @@ def analyze_emails_with_llm(
     emails: Iterable[EmailDocument],
     provider: str = "anthropic",
     model: Optional[str] = None,
-    max_tokens: int = 1400,
+    max_tokens: int = 4096,
     temperature: float = 0.0,
     api_key: Optional[str] = None,
     zai_base_url: Optional[str] = None,
@@ -573,14 +736,14 @@ def analyze_emails_with_llm(
     """Unified entry point: dispatch to Anthropic or Z.AI based on provider."""
     provider_lower = provider.strip().lower()
     if provider_lower == "zai" or provider_lower == "glm":
-        model = model or "glm-5"
+        model = model or "glm-4-plus"
         return analyze_emails_with_zai(
             emails=emails,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
             api_key=api_key,
-            base_url=zai_base_url,
+            zai_base_url=zai_base_url,
         )
     if provider_lower == "anthropic":
         model = model or "claude-3-5-sonnet-latest"

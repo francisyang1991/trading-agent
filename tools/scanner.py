@@ -391,17 +391,47 @@ def reset_market_context():
 # TECHNICAL CONFIDENCE SCORE
 # ============================================================================
 
-# Strategy-specific weights for tech score components
+# Strategy-specific weights for tech score components (6 components, sum = 1.0)
 TECH_WEIGHTS = {
-    "Trend Following":   {"ema_align": 0.30, "rsi": 0.15, "momentum": 0.25, "price_ema": 0.20, "vol": 0.10},
-    "Swing Trade":       {"ema_align": 0.20, "rsi": 0.25, "momentum": 0.15, "price_ema": 0.25, "vol": 0.15},
-    "Mean Reversion":    {"ema_align": 0.10, "rsi": 0.35, "momentum": 0.10, "price_ema": 0.30, "vol": 0.15},
-    "Short Pop-up":      {"ema_align": 0.25, "rsi": 0.25, "momentum": 0.20, "price_ema": 0.20, "vol": 0.10},
-    "Short Mean Revert": {"ema_align": 0.10, "rsi": 0.30, "momentum": 0.15, "price_ema": 0.30, "vol": 0.15},
-    "Trailing Stop":     {"ema_align": 0.30, "rsi": 0.10, "momentum": 0.30, "price_ema": 0.15, "vol": 0.15},
-    "Buy & Hold":        {"ema_align": 0.25, "rsi": 0.10, "momentum": 0.30, "price_ema": 0.20, "vol": 0.15},
-    "Stay Cash":         {"ema_align": 0.20, "rsi": 0.20, "momentum": 0.20, "price_ema": 0.20, "vol": 0.20},
+    "Trend Following":   {"ema_align": 0.25, "rsi": 0.10, "momentum": 0.20, "price_ema": 0.15, "vol": 0.10, "vpes": 0.20},
+    "Swing Trade":       {"ema_align": 0.15, "rsi": 0.20, "momentum": 0.15, "price_ema": 0.20, "vol": 0.10, "vpes": 0.20},
+    "Mean Reversion":    {"ema_align": 0.10, "rsi": 0.30, "momentum": 0.10, "price_ema": 0.25, "vol": 0.10, "vpes": 0.15},
+    "Short Pop-up":      {"ema_align": 0.20, "rsi": 0.20, "momentum": 0.15, "price_ema": 0.20, "vol": 0.10, "vpes": 0.15},
+    "Short Mean Revert": {"ema_align": 0.10, "rsi": 0.25, "momentum": 0.15, "price_ema": 0.25, "vol": 0.10, "vpes": 0.15},
+    "Trailing Stop":     {"ema_align": 0.25, "rsi": 0.10, "momentum": 0.25, "price_ema": 0.10, "vol": 0.10, "vpes": 0.20},
+    "Buy & Hold":        {"ema_align": 0.20, "rsi": 0.10, "momentum": 0.25, "price_ema": 0.15, "vol": 0.10, "vpes": 0.20},
+    "Stay Cash":         {"ema_align": 0.17, "rsi": 0.17, "momentum": 0.17, "price_ema": 0.17, "vol": 0.16, "vpes": 0.16},
 }
+
+
+def calculate_vpes(df: pd.DataFrame) -> Tuple[float, float]:
+    """
+    Calculate Volume-Price Expansion Score (VPES).
+    Measures buying/selling pressure quality by combining price changes with volume.
+
+    Returns: (vpes_ema, vpes_cumulative)
+      - vpes_ema: 3-bar EMA-smoothed VPES (positive = accumulation, negative = distribution)
+      - vpes_cumulative: 5-bar cumulative VPES (magnitude of recent pressure)
+    """
+    if len(df) < 25:
+        return 0.0, 0.0
+
+    price_change = (df['Close'] - df['Open']) / df['Open']
+    vol_avg = df['Volume'].rolling(20).mean()
+    # Avoid division by zero
+    vol_avg = vol_avg.replace(0, 1)
+    vol_ratio = df['Volume'] / vol_avg
+    vpes_raw = price_change * vol_ratio
+    vpes_ema = vpes_raw.ewm(span=3).mean().iloc[-1]
+    vpes_cum = vpes_raw.rolling(5).sum().iloc[-1]
+
+    # Handle NaN
+    if pd.isna(vpes_ema):
+        vpes_ema = 0.0
+    if pd.isna(vpes_cum):
+        vpes_cum = 0.0
+
+    return float(vpes_ema), float(vpes_cum)
 
 
 def calculate_tech_score(
@@ -417,6 +447,8 @@ def calculate_tech_score(
     volatility: float,
     vol_category: str,
     dist_ema21: float,
+    vpes_ema: float = 0.0,
+    vpes_cumulative: float = 0.0,
 ) -> Tuple[float, Dict[str, float]]:
     """
     Calculate technical confidence score (0-100).
@@ -590,7 +622,33 @@ def calculate_tech_score(
     else:
         vol_score = 10
 
-    # ── Weighted total ──
+    # ── Component 6: VPES — Volume-Price Expansion Score (0-20) ──
+    if is_short:
+        # For shorts: negative VPES = distribution = confirms weakness
+        if vpes_ema < -0.02:
+            vpes_score = 20
+        elif vpes_ema < -0.01:
+            vpes_score = 16
+        elif vpes_ema < -0.005:
+            vpes_score = 12
+        elif vpes_ema < 0:
+            vpes_score = 8
+        else:
+            vpes_score = 3  # Positive VPES = accumulation, bad for shorts
+    else:
+        # For longs: positive VPES = accumulation = buying pressure
+        if vpes_ema > 0.02 and vpes_cumulative > 0.05:
+            vpes_score = 20  # Strong accumulation
+        elif vpes_ema > 0.01 and vpes_cumulative > 0.02:
+            vpes_score = 16
+        elif vpes_ema > 0.005:
+            vpes_score = 12
+        elif vpes_ema > 0:
+            vpes_score = 8
+        else:
+            vpes_score = 3  # Distribution, bad for longs
+
+    # ── Weighted total (6 components) ──
     weights = TECH_WEIGHTS.get(strategy, TECH_WEIGHTS["Swing Trade"])
     components = {
         "ema_align": ema_score,
@@ -598,6 +656,7 @@ def calculate_tech_score(
         "momentum": mom_score,
         "price_ema": price_score,
         "vol": vol_score,
+        "vpes": vpes_score,
     }
 
     raw_score = (
@@ -605,7 +664,8 @@ def calculate_tech_score(
         components["rsi"] * weights["rsi"] +
         components["momentum"] * weights["momentum"] +
         components["price_ema"] * weights["price_ema"] +
-        components["vol"] * weights["vol"]
+        components["vol"] * weights["vol"] +
+        components["vpes"] * weights["vpes"]
     )
 
     # Scale: each component is 0-20, weights sum to 1.0, so raw = 0-20
@@ -728,6 +788,10 @@ class StockScan:
     tech_signal: str = "NEUTRAL"         # STRONG_BULL / BULL / NEUTRAL / BEAR / STRONG_BEAR
     tech_confidence: str = "NONE"        # HIGH / MODERATE / LOW / NONE
     tech_components: Dict = field(default_factory=dict)
+
+    # VPES (Volume-Price Expansion Score)
+    vpes_value: float = 0.0              # 3-bar EMA smoothed VPES
+    vpes_cumulative: float = 0.0         # 5-bar cumulative VPES
 
     # Market context
     market_vix: Optional[float] = None
@@ -1153,28 +1217,60 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
             (regime, vol_cat), (Strategy.STAY_CASH, 0, 0, 0)
         )
         
-        # Calculate entry zones
-        if regime in [Regime.PARABOLIC, Regime.STRONG_UP]:
+        # Calculate entry zones — STRATEGY-AWARE
+        # Each strategy has a different entry philosophy based on price vs EMA position
+        if strategy in [Strategy.TREND_FOLLOWING, Strategy.TRAILING_STOP, Strategy.BUY_HOLD]:
+            # Trend: enter near current price, ride the momentum
             buy_zone_high = price
-            buy_zone_low = max(ema9 * 0.98, price - 1.5 * atr)
-            stop_loss = price - 2.5 * atr
-        elif regime in [Regime.MODERATE_UP, Regime.WEAK_UP]:
-            buy_zone_high = ema21 * 1.02
-            buy_zone_low = ema21 * 0.98
-            stop_loss = ema50 * 0.95
+            buy_zone_low = max(ema9 * 0.98, price - 1.0 * atr)
+            stop_loss = price - 2.0 * atr
+        elif strategy == Strategy.SWING_TRADE:
+            # Swing: enter on pullback to EMA support zone
+            if price > ema9:
+                # Extended above EMA9 — wait for pullback into EMA9-EMA21 zone
+                buy_zone_high = ema9
+                buy_zone_low = ema21
+            elif price > ema21:
+                # Between EMA9 and EMA21 — in the ideal pullback zone
+                buy_zone_high = ema9
+                buy_zone_low = ema21 * 0.98
+            else:
+                # Below EMA21 — already at discount, entry near current price
+                buy_zone_high = price
+                buy_zone_low = max(price - 1.0 * atr, ema50)
+            stop_loss = min(ema21, buy_zone_low) - 1.5 * atr
+        elif strategy == Strategy.MEAN_REVERSION:
+            # Mean reversion: enter at deeper discount, target the mean
+            if price > ema21:
+                # Above mean — wait for pullback to EMA21-EMA50
+                buy_zone_high = ema21
+                buy_zone_low = ema50
+            else:
+                # Below mean — entry zone near current price down to EMA50
+                buy_zone_high = min(price, ema21)
+                buy_zone_low = max(ema50, price - 2.0 * atr)
+            stop_loss = min(ema50, buy_zone_low) - 1.5 * atr
         else:
+            # SHORT strategies or STAY_CASH
             buy_zone_high = ema21 * 0.98
             buy_zone_low = ema21 * 0.95
             stop_loss = ema21 * 0.90
-        
-        # Targets — regime-aware multipliers
-        # PARABOLIC/STRONG_UP: wider targets to match wider stops (2.5 ATR stop)
-        if regime in [Regime.PARABOLIC, Regime.STRONG_UP]:
-            target_1 = price + 3.0 * atr   # R:R ≈ 3.0/2.5 = 1.2x
-            target_2 = price + 5.0 * atr
-        elif regime in [Regime.MODERATE_UP, Regime.WEAK_UP]:
+
+        # Guard: ensure buy_zone_low <= buy_zone_high
+        if buy_zone_low > buy_zone_high:
+            buy_zone_low, buy_zone_high = buy_zone_high, buy_zone_low
+
+        # Targets — strategy-aware
+        if strategy in [Strategy.TREND_FOLLOWING, Strategy.TRAILING_STOP, Strategy.BUY_HOLD]:
+            target_1 = price + 2.5 * atr
+            target_2 = price + 4.5 * atr
+        elif strategy == Strategy.SWING_TRADE:
             target_1 = price + 2.0 * atr
-            target_2 = price + 4.0 * atr
+            target_2 = price + 3.5 * atr
+        elif strategy == Strategy.MEAN_REVERSION:
+            # Target: revert back to the mean (EMA21/EMA9)
+            target_1 = max(ema21, price + 1.0 * atr)
+            target_2 = max(ema9, price + 2.0 * atr)
         else:
             target_1 = price + 1.5 * atr
             target_2 = price + 3 * atr
@@ -1508,7 +1604,10 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
         score = base_pts + momentum_pts + rsi_pts + macd_pts + rr_pts
         score = max(0, min(100, score))
 
-        # ── Technical Confidence Score ──
+        # ── VPES (Volume-Price Expansion Score) ──
+        vpes_val, vpes_cum = calculate_vpes(data)
+
+        # ── Technical Confidence Score (6 components incl. VPES) ──
         market = fetch_market_context()
         raw_tech, tech_components = calculate_tech_score(
             strategy=strategy.value,
@@ -1521,6 +1620,8 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
             volatility=volatility,
             vol_category=vol_cat.value,
             dist_ema21=dist_ema21,
+            vpes_ema=vpes_val,
+            vpes_cumulative=vpes_cum,
         )
         adjusted_tech = apply_market_adjustment(raw_tech, action, market)
 
@@ -1584,6 +1685,8 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
             tech_signal=tech_signal,
             tech_confidence=tech_confidence,
             tech_components=tech_components,
+            vpes_value=vpes_val,
+            vpes_cumulative=vpes_cum,
             market_vix=market.vix,
             market_regime=market.market_regime,
             market_risk_appetite=market.risk_appetite,

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from pathlib import Path
 
+import pandas as pd
 from loguru import logger
 
 # Import components
@@ -23,8 +24,8 @@ from src.indicators.vpes import VPES
 from src.indicators.trend import TrendIndicators
 from src.indicators.volume import VolumeIndicators
 from src.classifier.stock_classifier import StockClassifier, StockType
-from src.signals.signal_engine import SignalEngine, SignalType
-from src.position.position_manager import PositionManager
+from src.signals.signal_engine import SignalEngine, Signal, SignalType
+from src.position.position_manager import PositionManager, Position
 from src.position.order_executor import OrderExecutor
 from src.risk.risk_manager import RiskManager, RiskLevel
 
@@ -186,10 +187,17 @@ class TradingAgent:
         
         while self.running:
             try:
+                if not self.ibkr.is_connected():
+                    logger.warning("IBKR connection lost, attempting reconnect...")
+                    if not self.connect():
+                        logger.error("Reconnect failed, waiting for next iteration")
+                        time.sleep(interval_seconds)
+                        continue
+
                 self._trading_iteration()
             except Exception as e:
                 logger.error(f"Error in trading iteration: {e}")
-            
+
             # Wait for next iteration
             time.sleep(interval_seconds)
         
@@ -279,14 +287,20 @@ class TradingAgent:
     
     def _execute_signal(
         self,
-        signal,
+        signal: Signal,
         symbol: str,
         current_price: float,
-        data,
-        position
-    ):
+        data: pd.DataFrame,
+        position: Optional[Position]
+    ) -> None:
         """Execute trading signal."""
-        
+
+        # Check stop loss first (highest priority) - before signal execution
+        # to prevent double-selling when EXIT signal and stop loss trigger on same bar
+        if position and current_price <= position.stop_price:
+            self._execute_stop_loss(symbol, position, current_price)
+            return
+
         # Entry
         if signal.signal_type == SignalType.ENTRY_LONG:
             can_open, reason = self.risk_manager.can_open_position(
@@ -326,7 +340,7 @@ class TradingAgent:
                     signal_score=signal.total_score,
                     reason=signal.reasoning
                 )
-                
+
                 self.trade_logger.log_trade(
                     symbol=symbol,
                     action="BUY",
@@ -337,7 +351,9 @@ class TradingAgent:
                     signal_score=signal.total_score,
                     position_pct=self.position_manager.get_position_pct(symbol)
                 )
-        
+            else:
+                logger.error(f"Entry order failed for {symbol}: {result.message}")
+
         # Add to position
         elif signal.signal_type == SignalType.ADD_LONG and position:
             can_add, reason = self.risk_manager.can_add_to_position(
@@ -364,7 +380,7 @@ class TradingAgent:
                 self.position_manager.add_to_position(
                     symbol, quantity, result.filled_price, signal.reasoning
                 )
-                
+
                 self.trade_logger.log_trade(
                     symbol=symbol,
                     action="ADD",
@@ -375,7 +391,9 @@ class TradingAgent:
                     signal_score=signal.total_score,
                     position_pct=self.position_manager.get_position_pct(symbol)
                 )
-        
+            else:
+                logger.error(f"Add order failed for {symbol}: {result.message}")
+
         # Exit
         elif signal.signal_type in [SignalType.EXIT_LONG, SignalType.PARTIAL_EXIT] and position:
             if signal.signal_type == SignalType.PARTIAL_EXIT:
@@ -394,7 +412,7 @@ class TradingAgent:
                 pnl = self.position_manager.reduce_position(
                     symbol, quantity, result.filled_price, signal.reasoning
                 )
-                
+
                 self.trade_logger.log_trade(
                     symbol=symbol,
                     action="SELL",
@@ -405,27 +423,31 @@ class TradingAgent:
                     pnl=pnl,
                     position_pct=self.position_manager.get_position_pct(symbol)
                 )
-        
-        # Check stop loss
-        if position and current_price <= position.stop_price:
-            result = self.order_executor.execute_market_order(
-                symbol, position.current_quantity, "SELL", current_price
+            else:
+                logger.error(f"Exit order failed for {symbol}: {result.message}")
+
+    def _execute_stop_loss(self, symbol: str, position: Position, current_price: float) -> None:
+        """Execute stop loss for a position."""
+        result = self.order_executor.execute_market_order(
+            symbol, position.current_quantity, "SELL", current_price
+        )
+
+        if result.success:
+            pnl = self.position_manager.close_position(
+                symbol, result.filled_price, "Stop loss triggered"
             )
-            
-            if result.success:
-                pnl = self.position_manager.close_position(
-                    symbol, result.filled_price, "Stop loss triggered"
-                )
-                
-                self.trade_logger.log_trade(
-                    symbol=symbol,
-                    action="SELL",
-                    quantity=position.current_quantity,
-                    price=result.filled_price,
-                    order_type="stop",
-                    reason="Stop loss",
-                    pnl=pnl
-                )
+
+            self.trade_logger.log_trade(
+                symbol=symbol,
+                action="SELL",
+                quantity=position.current_quantity,
+                price=result.filled_price,
+                order_type="stop",
+                reason="Stop loss",
+                pnl=pnl
+            )
+        else:
+            logger.error(f"Stop loss order failed for {symbol}: {result.message}")
     
     def _calculate_stop(self, data, entry_price: float) -> float:
         """Calculate stop loss price."""

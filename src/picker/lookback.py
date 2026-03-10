@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from src.picker.fundamentals_service import FundamentalSnapshotService
+from src.regime.classifier import Regime, classify_regime
 from src.universe.filters import (
     build_technical_base_from_prices,
     moat_quality_filter,
@@ -57,12 +58,22 @@ def run_picker_at_date(
 
     # 1. Compute SPY benchmark return at as_of_date
     spy_trunc = _truncate(spy_df, as_of_date)
-    if spy_trunc is None or len(spy_trunc) < 252:
+    if spy_trunc is None or len(spy_trunc) < 130:
         print(f"  [lookback {as_of_date}] SPY has insufficient history, skipping")
         return pd.DataFrame()
 
     spy_close = spy_trunc["Close"]
-    spy_ret_252 = float(spy_close.iloc[-1] / spy_close.iloc[-252] - 1)
+    spy_ret_252 = float(spy_close.iloc[-1] / spy_close.iloc[-130] - 1)
+
+    # 1b. Market regime filter: skip picking when SPY is in clear downtrend (<-20% 6m)
+    if bool(lb_cfg.get("skip_in_downtrend", False)):
+        lookback_6m = 126
+        if len(spy_close) >= lookback_6m:
+            spy_ret_6m = float(spy_close.iloc[-1] / spy_close.iloc[-lookback_6m] - 1) * 100
+            regime = classify_regime(spy_ret_6m)
+            if regime == Regime.DOWNTREND:
+                print(f"  [lookback {as_of_date}] SPY regime={regime.name} (6m={spy_ret_6m:.1f}%), skipping")
+                return pd.DataFrame()
 
     # 2. Build technical base at as_of_date
     base = build_technical_base_from_prices(
@@ -70,6 +81,7 @@ def run_picker_at_date(
         benchmark_return_252=spy_ret_252,
         near_52w_ratio=tech_cfg.get("near_52w_ratio", 0.85),
         min_bars=tech_cfg.get("min_bars", 260),
+        min_bars_recent_ipo=tech_cfg.get("min_bars_recent_ipo", 130),
         as_of_date=as_of_date,
     )
     if base.empty:
@@ -145,7 +157,9 @@ def _filter_lookback_fundamentals(
 
     df = merged.copy()
     # Quality stage requires ROE + GM rank regardless of YoY policy.
-    df = df.dropna(subset=["roe", "gm_rank"])
+    # df = df.dropna(subset=["roe", "gm_rank"])
+    df["roe"] = df.get("roe", pd.Series(dtype=float)).fillna(0)
+    df["gm_rank"] = df.get("gm_rank", pd.Series(dtype=float)).fillna(50.0)
     if df.empty:
         return df
 

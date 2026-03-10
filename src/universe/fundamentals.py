@@ -173,7 +173,7 @@ class FundamentalAnalyzer:
                 income_stmt = ticker.income_stmt
                 balance_sheet = ticker.balance_sheet
                 cash_flow = ticker.cash_flow
-            except:
+            except Exception:
                 income_stmt = pd.DataFrame()
                 balance_sheet = pd.DataFrame()
                 cash_flow = pd.DataFrame()
@@ -302,7 +302,7 @@ class FundamentalAnalyzer:
             
             return None
             
-        except:
+        except Exception:
             return None
     
     def _calculate_revenue_cagr(self, income_stmt: pd.DataFrame) -> Optional[float]:
@@ -330,7 +330,7 @@ class FundamentalAnalyzer:
             
             return None
             
-        except:
+        except Exception:
             return None
     
     def _calculate_interest_coverage(self, income_stmt: pd.DataFrame) -> Optional[float]:
@@ -359,7 +359,7 @@ class FundamentalAnalyzer:
             
             return None
             
-        except:
+        except Exception:
             return None
     
     def _calculate_altman_z(
@@ -417,7 +417,7 @@ class FundamentalAnalyzer:
             
             return z_score
             
-        except:
+        except Exception:
             return None
     
     def _calculate_piotroski(self, metrics: FundamentalMetrics, info: Dict) -> int:

@@ -54,6 +54,7 @@ results/
 config/settings.local.yaml
 .env
 env.list
+env.live.list
 token.json
 
 # State files
