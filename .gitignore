@@ -55,6 +55,7 @@ config/settings.local.yaml
 .env
 env.list
 token.json
+secret/
 
 # State files
 data/positions.json
