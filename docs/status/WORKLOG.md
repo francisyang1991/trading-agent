@@ -1,7 +1,58 @@
 # Worklog & Handover Notes
 
-**Last Updated:** 2026-02-24
-**Branch:** `feature/pst-scheduler-gui-final`
+**Last Updated:** 2026-03-10
+**Branch:** `main`
+
+## Mar 10, 2026 — Data Routing + Runtime Data Cleanup
+
+### Summary
+Finished the production/dev data split and removed runtime artifacts from source control. `main` now has environment-aware provider routing, snapshot export/pull tooling for GCP and local sync, and a clean git strategy where runtime data stays on disk or in Cloud Storage instead of polluting the repo.
+
+### What Landed
+1. **Production-first data routing**
+   - Added `src/data/routing.py` to centralize source precedence by mode: `prod`, `dev`, `backtest`.
+   - Daily data in prod now prefers GCP IBKR-backed services before local IBKR/Yahoo.
+   - Intraday 1-minute data now has explicit source order instead of implicit local-only fallbacks.
+
+2. **Snapshot-based local/GCP workflow**
+   - Added runtime snapshot export/pull tooling:
+     - `src/data/archive.py`
+     - `tools/export_data_snapshot.py`
+     - `tools/pull_data_snapshot.py`
+     - `scripts/export_data_snapshot.sh`
+     - `scripts/pull_data_snapshot.sh`
+   - Added cron setup for GCP snapshot exports:
+     - `scripts/data_snapshot_export_cron.sh`
+     - `scripts/setup_data_snapshot_cron.sh`
+   - Updated deployment docs so GCP runtime state can be backed up and restored without Git.
+
+3. **Git cleanup for runtime artifacts**
+   - Removed tracked runtime files under `data/`, `outputs/`, and `results/` from the Git index.
+   - Expanded `.gitignore` so caches, generated datasets, backtest outputs, and snapshot tarballs stay out of the repo.
+   - Local files were preserved on disk; only Git tracking changed.
+
+### Reflection
+- The repo had drifted into mixing source code, runtime state, research outputs, and cached market data. That is manageable for a small prototype but not for a system that has both local research and GCP production responsibilities.
+- Production needs one authoritative online path. For this project that means GCP-hosted, IBKR-backed data should drive live/dashboard behavior instead of whichever local cache happened to be warm.
+- Local development still needs richer history and debugging flexibility, but that should come from snapshot sync and local rebuilds, not from committing datasets into Git.
+- The most important structural fix was not a new provider class; it was drawing a hard boundary between versioned code and non-versioned runtime data.
+
+### Validation
+- `venv/bin/python -m pytest -q tests/unit/test_data/test_archive.py tests/unit/test_data/test_routing.py tests/unit/test_data/test_price_loader_routing.py`
+- Result: `6 passed`
+- `main` merge commits:
+  - `17decf2` — `Merge cleanup/untrack-runtime-data`
+  - `61db923` — `Merge feature/data-routing-and-snapshots`
+
+### Practical Outcome
+- `main` is clean after the migration.
+- Runtime data remains available locally but no longer dirties the repo.
+- Local-to-GCP workflow now has a clear direction:
+  - code in Git
+  - runtime data in local ignored paths or Cloud Storage snapshots
+  - prod routing driven by environment mode
+
+---
 
 ## Feb 21, 2026 — Code Quality Best Practices Plan (Implementation)
 

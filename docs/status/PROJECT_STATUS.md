@@ -1,6 +1,6 @@
 # Trading Agent Project Status
 
-**Last Updated**: February 4, 2026
+**Last Updated**: March 10, 2026
 
 ## Current System Capabilities
 
@@ -10,7 +10,7 @@
 | IB Gateway Connection | **Production Ready** | Auto-reconnect, heartbeat monitoring, state machine |
 | Trading Mode Switch | **Complete** | Paper/Live mode via environment variable |
 | Rate Limiting | **Complete** | Token bucket (50 msg/s) with priority queues |
-| Data Caching | **Complete** | SQLite + yfinance with 500+ symbols cached |
+| Data Routing | **Complete** | Environment-aware routing for `prod`, `dev`, and `backtest` |
 
 ### Trading GUI (v2.0)
 | Feature | Status | Description |
@@ -28,9 +28,10 @@
 ### Data Layer
 | Component | Status | Description |
 |-----------|--------|-------------|
-| CachedDataManager | **Complete** | SQLite + yfinance for backtesting |
+| CachedDataManager | **Complete** | SQLite cache plus routed providers for prod/dev/backtest |
 | IBKRAsyncClient | **Complete** | Pure async for 24/7 operation |
-| Snapshot Tool | **Complete** | Download universe to parquet files |
+| Runtime Snapshot Sync | **Complete** | Export/pull ignored runtime data between local and GCP |
+| Runtime Data Hygiene | **Complete** | `data/`, `outputs/`, and `results/` removed from Git tracking |
 
 ### Tested Futures Contracts
 | Symbol | Name | Exchange | Multiplier | Status |
@@ -160,7 +161,7 @@ def create_bracket_order(symbol, action, qty, entry_price, stop_loss, take_profi
 | Environment | Status | Notes |
 |-------------|--------|-------|
 | Local Development | **Active** | http://localhost:8080 |
-| Google Cloud (GCE) | **Planned** | See deployment guide |
+| Google Cloud (GCE) | **Prepared** | Prod-first routing and snapshot restore/export documented |
 | Docker | **Planned** | Dockerfile ready |
 
 ---
