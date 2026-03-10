@@ -27,10 +27,21 @@ mplfinance>=0.12.10b0
 # Configuration
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
+pytz>=2024.1            # Timezone handling
 
 # Logging & Monitoring
 loguru>=0.7.2
 rich>=13.7.0
+
+# Web Framework
+flask>=3.0.0
+
+# Discord Bot
+discord.py>=2.3.0
+
+# LLM APIs
+anthropic>=0.40.0
+zai-sdk>=0.1.0
 
 # News API (optional)
 newsapi-python>=0.2.7
@@ -38,14 +49,25 @@ feedparser>=6.0.10
 
 # Database
 sqlalchemy>=2.0.0
+pymysql>=1.1.0
 
 # Scheduling
 schedule>=1.2.1
 apscheduler>=3.10.4
+prefect>=2.19.0
 
 # Type hints & validation
 pydantic>=2.5.0
+pyarrow>=16.0.0
 
 # Testing
 pytest>=7.4.0
 pytest-cov>=4.1.0
+pytest-asyncio>=0.23.0    # Async test support
+pytest-timeout>=2.2.0     # Test timeout protection
+
+# Retry library
+tenacity>=8.2.0           # Retry with exponential backoff
+
+# Monitoring
+psutil>=5.9.0             # Memory monitoring for reliability tests

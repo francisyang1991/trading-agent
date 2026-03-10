@@ -1,0 +1,94 @@
+# =============================================================================
+# Three-Layer Stock Picker Configuration
+# =============================================================================
+# All picker parameters in one place. The runner reads this file;
+# no CLI arguments needed for day-to-day operation.
+
+# --- Data ingestion ---
+data:
+  period: "2y"                      # Price history length to fetch
+  batch_size: 200                   # Yahoo batch download size
+  yf_threads: false                 # Use threaded Yahoo download
+  max_symbols: 0                    # 0 = all listed US stocks
+
+# --- Preflight cache quality gate (auto-run before picker) ---
+preflight:
+  enabled: false
+  strict: true                      # Pass/fail gate; non-zero check aborts picker
+  on_fail: "abort"                  # abort | warn
+  repair_invalid_first: true        # Auto purge invalid OHLCV rows before checks
+  include_quarterly: false          # Optional quarterly-cache coverage gate
+  min_quarterly_coverage_pct: 0.50
+  max_invalid_rows: 0
+  max_missing_pct: 0.02
+  min_fresh_pct: 0.98
+  min_minbars_pct: 0.80             # Listed universe includes new symbols; keep practical
+  max_stale_days: 7
+  # period_days/min_bars default from data.period/technical.min_bars
+  output: "results/picker/cache_health_preflight.json"
+
+# --- Auto earnings-refresh gate (before fundamentals) ---
+# Set enabled: false — earnings refresh runs as a separate weekday cron job, not during picker.
+earnings_refresh:
+  enabled: false
+  on_fail: "abort"                  # abort | warn
+  calendar_recent_days: 2           # Refresh when earnings were disclosed yesterday/today
+  months_back: "3,6,9,12"
+  force_refresh_all_candidates: false
+  skip_validation: true             # Keep picker runtime predictable; enable if needed
+  skip_scanner: true
+  progress_every: 50
+  dry_run: false
+  audit_dir: "results/picker"
+
+# --- Technical filter (Layer 1) ---
+technical:
+  rs_threshold: 80.0                # RS rank percentile floor
+  near_52w_ratio: 0.85              # Price >= 85% of 52w high
+  min_bars: 260                     # Minimum bars for feature calc (full history)
+  min_bars_recent_ipo: 130          # Allow recent IPOs with 130+ bars (6mo) — no 260 enforcement
+
+# --- Fundamental filter (Layer 2) ---
+fundamental:
+  min_eps_yoy: 0.25                 # EPS YoY growth >= 25%
+  min_revenue_growth: 0.10          # Revenue growth >= 10%
+  min_revenue_acceleration: null    # null = disabled (very strict when enabled)
+  require_surprise_non_negative: false
+
+# --- Quality / Moat filter (Layer 3) ---
+quality:
+  min_roe: 0.10                     # ROE >= 10%
+  min_gm_rank: 60.0                 # Gross margin percentile >= 60
+  max_debt_to_equity: 1.2           # D/E <= 1.2x
+
+# --- Composite scoring weights ---
+scoring:
+  rs_rank_weight: 0.35
+  eps_yoy_weight: 0.20
+  revenue_growth_weight: 0.20
+  gm_rank_weight: 0.15
+  roe_weight: 0.10
+
+# --- Post-processing (diversification) ---
+post_process:
+  deduplicate_share_classes: true
+  max_per_industry: 2               # Max picks per industry (sector cap)
+  top_n: 25                         # Final top-N output
+
+# --- Historical lookback (compare picks across time) ---
+lookback:
+  enabled: false                    # Set true to run lookback comparison
+  months_back: [3, 6, 9]           # Run picker at these historical points
+  refresh_snapshot_cache: false     # Recompute historical snapshot cache files
+  skip_missing_yoy_checks: true     # Do not reject lookback rows only for missing YoY fields
+
+# --- IBKR fallback ---
+ibkr:
+  gcloud_trade_api_url: "http://34.75.9.166:8080"
+  gcloud_trade_api_key: "saiyan-trade-2026"
+  local_gateway_url: "127.0.0.1:4002"
+  local_client_id: 99
+
+# --- Output ---
+output:
+  dir: "results/picker"

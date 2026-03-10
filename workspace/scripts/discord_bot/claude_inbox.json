@@ -1,0 +1,17 @@
+{
+  "messages": [
+    {
+      "msg_id": "1471774312087158857",
+      "channel_id": "1329179501002752084",
+      "channel_name": "ai-chat",
+      "guild_name": "RichOrDie",
+      "author": "francisbanger",
+      "author_id": "233421834584981514",
+      "content": "can you think of these signals?",
+      "timestamp": "2026-02-13T07:45:40.246000+00:00",
+      "read": false,
+      "replied": false
+    }
+  ],
+  "last_id": 1471774312087158857
+}

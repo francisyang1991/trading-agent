@@ -1,0 +1,193 @@
+name: CI Tests
+
+on:
+  pull_request:
+    branches: [main, expand-universe]
+  push:
+    branches: [main, expand-universe]
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Lint ────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff check
+        run: |
+          ruff check src/ tests/ tools/ workspace/scripts/ \
+            --select E,F,W \
+            --ignore E501,E402 \
+            --exit-zero
+
+  # ── Unit Tests (Tier 1) ────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests (Tier 1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest pytest-cov pytest-asyncio pytest-timeout
+          pip install pandas numpy ta yfinance loguru
+          pip install pyyaml python-dotenv pydantic
+
+      - name: Run Tier 1 unit tests
+        run: |
+          python -m pytest -m unit \
+            --tb=short \
+            --timeout=60 \
+            -v \
+            --junitxml=test-results/unit.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: test-results/
+
+  # ── Integration Tests (Tier 2) ─────────────────────────────────────
+  integration-tests:
+    name: Integration Tests (Tier 2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest pytest-cov pytest-asyncio pytest-timeout
+          pip install pandas numpy ta yfinance scikit-learn loguru requests
+          pip install pyyaml python-dotenv pydantic sqlalchemy
+
+      - name: Run Tier 2 integration tests
+        run: |
+          python -m pytest -m integration \
+            --tb=short \
+            --timeout=120 \
+            -v \
+            --junitxml=test-results/integration.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: test-results/
+
+  # ── Bot Tests (Tier 3) ─────────────────────────────────────────────
+  bot-tests:
+    name: Bot Tests (Tier 3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest pytest-cov pytest-asyncio pytest-timeout
+          pip install pandas numpy loguru requests
+          pip install pyyaml python-dotenv pydantic
+
+      - name: Run Tier 3 bot tests
+        run: |
+          python -m pytest -m bot \
+            --tb=short \
+            --timeout=60 \
+            -v \
+            --junitxml=test-results/bot.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-test-results
+          path: test-results/
+
+  # ── Coverage Report ────────────────────────────────────────────────
+  coverage:
+    name: Test Coverage
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, bot-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest pytest-cov pytest-asyncio pytest-timeout
+          pip install pandas numpy ta yfinance scikit-learn loguru requests
+          pip install pyyaml python-dotenv pydantic sqlalchemy
+
+      - name: Run all tests with coverage
+        run: |
+          python -m pytest -m "unit or integration or bot" \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=html:coverage-report \
+            --tb=short \
+            --timeout=120 \
+            -v
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-report/
+
+  # ── Gate: All must pass before merge ───────────────────────────────
+  ci-gate:
+    name: CI Gate (All Checks Must Pass)
+    runs-on: ubuntu-latest
+    needs: [lint, unit-tests, integration-tests, bot-tests]
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [[ "${{ needs.lint.result }}" != "success" ]] || \
+             [[ "${{ needs.unit-tests.result }}" != "success" ]] || \
+             [[ "${{ needs.integration-tests.result }}" != "success" ]] || \
+             [[ "${{ needs.bot-tests.result }}" != "success" ]]; then
+            echo "One or more CI checks failed:"
+            echo "  lint: ${{ needs.lint.result }}"
+            echo "  unit-tests: ${{ needs.unit-tests.result }}"
+            echo "  integration-tests: ${{ needs.integration-tests.result }}"
+            echo "  bot-tests: ${{ needs.bot-tests.result }}"
+            exit 1
+          fi
+          echo "All CI checks passed!"

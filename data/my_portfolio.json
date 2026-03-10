@@ -1,0 +1,48 @@
+{
+  "positions": {
+    "XPEV": {
+      "symbol": "XPEV",
+      "shares": 100,
+      "avg_cost": 21.0,
+      "first_entry": "2026-01-14",
+      "last_entry": "2026-01-14",
+      "total_cost": 2100.0,
+      "current_price": 20.88,
+      "current_value": 2088.0,
+      "unrealized_pnl": -12.0,
+      "unrealized_pnl_pct": -0.57,
+      "notes": "Scanner BUY signal"
+    },
+    "IONQ": {
+      "symbol": "IONQ",
+      "shares": 50,
+      "avg_cost": 48.4,
+      "first_entry": "2026-01-14",
+      "last_entry": "2026-01-14",
+      "total_cost": 2420.0,
+      "current_price": 47.56,
+      "current_value": 2378.0,
+      "unrealized_pnl": -42.0,
+      "unrealized_pnl_pct": -1.74,
+      "notes": "Scanner BUY signal"
+    },
+    "AMD": {
+      "symbol": "AMD",
+      "shares": 20,
+      "avg_cost": 221.0,
+      "first_entry": "2026-01-14",
+      "last_entry": "2026-01-14",
+      "total_cost": 4420.0,
+      "current_price": 227.92,
+      "current_value": 4558.4,
+      "unrealized_pnl": 138.4,
+      "unrealized_pnl_pct": 3.13,
+      "notes": "Manual entry - uptrend"
+    }
+  },
+  "total_cost": 8940.0,
+  "total_value": 9024.4,
+  "total_unrealized_pnl": 84.4,
+  "total_unrealized_pnl_pct": 0.94,
+  "last_updated": "2026-01-15T18:29:28.708585"
+}

@@ -1,0 +1,2 @@
+level,key,side,trade_count,win_rate,profit_factor,total_return,buy_hold_return,alpha_pct,cagr,sharpe,max_dd
+overall,TSLA,long,70,54.285714285714285,2.9677328565751475,-0.3427472075763993,-3.095900121296691,2.7531529137202915,0.0,-1.563645966710665,1.106986076124354

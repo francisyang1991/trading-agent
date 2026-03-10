@@ -40,7 +40,12 @@ logs/
 # Data
 data/cache/
 data/historical/
+data/snapshots/
+data/ib-gateway/
 *.parquet
+*.db
+*.db-shm
+*.db-wal
 
 # Results
 results/
@@ -49,6 +54,8 @@ results/
 config/settings.local.yaml
 .env
 env.list
+env.live.list
+token.json
 
 # State files
 data/positions.json
@@ -64,3 +71,10 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Workspace - exclude data, keep scripts
+workspace/data/
+workspace/venv/
+workspace/legacy/
+workspace/config/discord_servers.json
+workspace/node_modules/

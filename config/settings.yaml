@@ -3,7 +3,7 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# IBKR Connection Settings
+# IBKR Connection Settings (Legacy - TWS Direct)
 # -----------------------------------------------------------------------------
 ibkr:
   host: "127.0.0.1"
@@ -11,6 +11,30 @@ ibkr:
   client_id: 1
   readonly: false
   timeout: 30
+
+# -----------------------------------------------------------------------------
+# IB Gateway Connection (ib_async native API) - RECOMMENDED FOR 24/7 OPERATION
+# -----------------------------------------------------------------------------
+# Use this configuration for Docker-based IB Gateway deployment
+# Start with: docker compose --profile gateway up -d
+ib_gateway:
+  host: "127.0.0.1"
+  port: 4002              # 4001=live, 4002=paper
+  client_id: 1
+  readonly: false
+  
+  # Connection Management
+  connection_timeout: 30   # Initial connection timeout (seconds)
+  reconnect_delay: 5       # Initial delay before reconnection (seconds)
+  max_reconnect_attempts: 10  # Max reconnection attempts before error state
+  heartbeat_interval: 30   # Heartbeat check interval (seconds)
+  
+  # Request Throttling
+  requests_per_second: 45  # Request rate limit (IBKR limit is 50)
+  
+  # Logging
+  log_api_calls: false     # Log all API calls (verbose)
+  log_connection_events: true  # Log connection state changes
 
 # -----------------------------------------------------------------------------
 # Trading Parameters

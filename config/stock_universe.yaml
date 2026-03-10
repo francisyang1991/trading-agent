@@ -6,6 +6,57 @@
 benchmark: SPY
 
 # ============================================================================
+# STRATEGY GUIDANCE (Volume Pullback EMA9)
+# ============================================================================
+strategy_guidance:
+  volume_pullback_ema9:
+    data_source: "results/pattern_backtest_all_score.csv"
+    as_of: "2026-01-17"
+    min_samples_per_theme: 5
+    notes:
+      - "Best after clear downtrend + higher low / double bottom with volume"
+      - "Avoid base-breakout consolidations without prior downtrend"
+      - "Avoid entries within 5 days of earnings"
+      - "Fundamental/news traits are heuristic, not yet computed in code"
+    technical_traits:
+      - "Shallower pullbacks (median ~4% vs failures ~8%)"
+      - "Short pullbacks (1-3 bars) outperform longer contractions"
+      - "Support held at prior resistance more often (96% vs 84%)"
+      - "Avoid blow-off volume spikes at breakout (exhaustion risk)"
+    fundamental_traits:
+      - "Positive YoY revenue growth and stable/expanding margins"
+      - "Improving or positive free cash flow; manageable net debt"
+      - "Lower dilution risk (avoid frequent secondary offerings)"
+    news_traits:
+      - "Recent positive guidance or product catalyst (last 1-3 months)"
+      - "Avoid binary events (earnings, FDA, DOJ, merger rulings)"
+      - "Avoid meme-driven headline spikes without follow-through"
+    avoid_characteristics:
+      - "Cyclical inventory/supply-chain shocks (common in semis)"
+      - "High beta + hype spikes without base (meme/EV auto)"
+      - "Base breakouts without prior downtrend context"
+    favored_themes:
+      - ai_software
+      - clean_energy
+      - fintech
+      - ecommerce
+      - saas_software
+      - crypto
+      - space
+      - momentum_leaders
+    caution_themes:
+      - ultra_volatile
+      - ai_chips
+      - cybersecurity
+      - moonvest
+    avoid_themes:
+      - ev_auto
+      - meme_retail
+      - semiconductors
+    avoid_symbols:
+      - RIVN
+
+# ============================================================================
 # THEMES / SECTORS
 # ============================================================================
 themes:
@@ -358,7 +409,6 @@ themes:
       - COP    # ConocoPhillips
       - EOG    # EOG Resources
       - SLB    # Schlumberger
-      - OXY    # Occidental
       - MPC    # Marathon Petroleum
       - VLO    # Valero
       - PSX    # Phillips 66
@@ -907,7 +957,6 @@ all_symbols:
   - COP
   - EOG
   - SLB
-  - OXY
   - MPC
   - VLO
   - PSX

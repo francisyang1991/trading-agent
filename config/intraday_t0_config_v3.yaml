@@ -1,0 +1,43 @@
+# V3 Config: Regime-Aware Multi-Timeframe T0
+# Iteration 1 improvements:
+#   - 3-minute bars for smoother z-score signals
+#   - Regime detection via VWAP slope
+#   - Tuned for $50k portfolio across 4 stocks
+
+strategy:
+  bar_minutes: 3
+  zscore_entry_buy: -2.0
+  zscore_entry_sell: 2.0
+  zscore_exit_to_mean: 0.6
+  rolling_std_window: 20
+  atr_window: 14
+  atr_stop_multiplier: 1.2
+
+regime:
+  lookback_bars: 20        # 20 x 3min = 60 minutes of VWAP slope
+  slope_threshold_bps: 3.0 # >3 bps/bar avg slope = trend day
+
+execution:
+  commission_bps: 1.0
+  slippage_bps: 1.5
+
+risk:
+  satellite_max_pct_of_core: 0.50
+  risk_per_trade_pct: 0.01
+  max_notional_per_trade_pct: 0.10
+  min_trade_shares: 1
+
+session_windows:
+  reduce_only:
+    - { start: "09:30", end: "10:00" }
+  main:
+    - { start: "10:00", end: "11:30" }
+    - { start: "13:30", end: "15:00" }
+  midday_half_size:
+    - { start: "11:30", end: "13:30" }
+
+replay:
+  min_bars_between_trades: 4
+  min_hold_bars: 3
+  max_trades_per_day: 10
+  min_vwap_distance_bps: 30.0

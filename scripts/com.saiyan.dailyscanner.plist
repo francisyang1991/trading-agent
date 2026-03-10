@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Unique identifier for this job -->
+    <key>Label</key>
+    <string>com.saiyan.dailyscanner</string>
+    
+    <!-- Program to execute -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/bytedance/Documents/legacy_fromtt/SAIYANCapital25/trading_agent/scripts/daily_scan.sh</string>
+    </array>
+    
+    <!-- Schedule: Run daily at 12:30 PM (12:30) -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>12</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    
+    <!-- Working directory -->
+    <key>WorkingDirectory</key>
+    <string>/Users/bytedance/Documents/legacy_fromtt/SAIYANCapital25/trading_agent</string>
+    
+    <!-- Redirect stdout/stderr to log files -->
+    <key>StandardOutPath</key>
+    <string>/Users/bytedance/Documents/legacy_fromtt/SAIYANCapital25/trading_agent/logs/launchd_stdout.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/bytedance/Documents/legacy_fromtt/SAIYANCapital25/trading_agent/logs/launchd_stderr.log</string>
+    
+    <!-- Environment variables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <key>PYTHON_BIN</key>
+        <string>python3</string>
+    </dict>
+    
+    <!-- Run even if computer was asleep at scheduled time (runs on wake) -->
+    <key>StartInterval</key>
+    <false/>
+    
+    <!-- Keep alive settings (don't restart on failure) -->
+    <key>KeepAlive</key>
+    <false/>
+    
+    <!-- Nice level (lower priority) -->
+    <key>Nice</key>
+    <integer>10</integer>
+</dict>
+</plist>

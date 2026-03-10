@@ -1,0 +1,24 @@
+[Unit]
+Description=IB Gateway Watchdog - Auto-restart on failure
+After=docker.service
+Requires=docker.service
+Documentation=See tools/gateway_watchdog.py
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/francisyang/trading-agent
+Environment=GATEWAY_CONTAINER=saiyan-ibgateway
+Environment=AGENT_CONTAINER=saiyan-agent
+Environment=COMPOSE_DIR=/home/francisyang/trading-agent
+Environment=CHECK_INTERVAL=30
+Environment=MAX_RESTARTS_PER_HOUR=3
+Environment=WATCHDOG_LOG_DIR=/var/log/trading-watchdog
+# Optional: set Discord webhook for notifications
+# Environment=WATCHDOG_DISCORD_WEBHOOK=https://discord.com/api/webhooks/xxx/yyy
+ExecStart=/usr/bin/python3 -m tools.gateway_watchdog --interval 30
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

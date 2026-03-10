@@ -1,17 +1,65 @@
 # SAIYAN Trading Agent - Docker Compose Configuration
-# Includes IBeam for IBKR Client Portal Web API authentication
+# Supports two connection modes:
+#   1. IB Gateway (ib_async native API) - Recommended for 24/7 operation
+#   2. IBeam (REST Web API) - Alternative for simpler setups
 #
-# Usage:
+# Usage (IB Gateway - recommended):
 #   1. Create env.list with IBKR credentials (see env.example)
-#   2. Run: docker compose up -d
+#   2. Run: docker compose --profile gateway up -d
+#   3. Verify: nc -z localhost 4002
+#
+# Usage (IBeam - legacy):
+#   1. Create env.list with IBKR credentials
+#   2. Run: docker compose --profile ibeam up -d
 #   3. Verify: curl -k https://localhost:5000/v1/api/iserver/auth/status
 
 services:
-  # IBeam - IBKR Authentication Gateway
+  # =============================================================================
+  # IB Gateway - Native API (ib_async) - RECOMMENDED FOR 24/7 OPERATION
+  # =============================================================================
+  # Uses gnzsnz/ib-gateway for headless IB Gateway
+  # https://github.com/gnzsnz/ib-gateway-docker
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    container_name: saiyan-ibgateway
+    profiles:
+      - gateway
+      - full
+    env_file:
+      - env.list
+    environment:
+      - TWS_USERID=${IB_USERNAME}
+      - TWS_PASSWORD=${IB_PASSWORD}
+      - TRADING_MODE=${IB_TRADING_MODE:-paper}
+      - TWS_ACCEPT_INCOMING=all
+      - READ_ONLY_API=${IB_READONLY:-no}
+      - VNC_SERVER_PASSWORD=${VNC_PASSWORD:-}
+      - TWOFA_TIMEOUT_ACTION=restart
+    ports:
+      - "4001:4001"   # Live trading API port
+      - "4002:4002"   # Paper trading API port
+      - "5900:5900"   # VNC for debugging (optional)
+    volumes:
+      - ./data/ib-gateway:/root/Jts:rw
+    restart: unless-stopped
+    healthcheck:
+      # nc is missing in ib-gateway image; use bash /dev/tcp probe instead
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/4002' 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # =============================================================================
+  # IBeam - REST Web API (legacy)
+  # =============================================================================
   # https://github.com/Voyz/ibeam
   ibeam:
     image: voyz/ibeam
     container_name: saiyan-ibeam
+    profiles:
+      - ibeam
+      - full
     env_file:
       - env.list
     ports:
@@ -26,17 +74,122 @@ services:
       retries: 3
       start_period: 60s
 
-  # Optional: Trading Agent (uncomment to run in container)
-  # trading-agent:
-  #   build: .
-  #   container_name: saiyan-agent
-  #   depends_on:
-  #     ibeam:
-  #       condition: service_healthy
-  #   environment:
-  #     - IBKR_GATEWAY_URL=https://ibeam:5000
-  #   volumes:
-  #     - ./config:/app/config:ro
-  #     - ./logs:/app/logs
-  #     - ./data:/app/data
-  #   network_mode: bridge
+  # =============================================================================
+  # Trading Agent with Web GUI
+  # =============================================================================
+  trading-agent:
+    build: .
+    container_name: saiyan-agent
+    profiles:
+      - full
+      - agent
+    depends_on:
+      ib-gateway:
+        condition: service_healthy
+    environment:
+      - IB_HOST=ib-gateway
+      - IB_PORT=${IB_PORT:-4002}
+      - IB_CLIENT_ID=${IB_CLIENT_ID:-1}
+      - IB_TRADING_MODE=${IB_TRADING_MODE:-paper}
+      - GUI_PORT=8080
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "${GUI_PORT:-8080}:8080"
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    command: python -m tools.trading_gui
+
+  # =============================================================================
+  # Discord Trading Bot - Handles BUY/SELL commands via Discord
+  # =============================================================================
+  # Connects to IB Gateway via IBKRAsyncClient + AsyncOrderExecutor.
+  # When a user says "@bot buy HOOD", it analyzes the stock,
+  # computes ideal entry, and places a limit order.
+  # Usage: docker compose --profile discord-bot up -d
+  discord-bot:
+    build: .
+    container_name: saiyan-discord-bot
+    profiles:
+      - discord-bot
+      - full
+    environment:
+      - IB_HOST=ib-gateway
+      - IB_PORT=4004
+      - IB_CLIENT_ID=50
+      - IB_TRADING_MODE=${IB_TRADING_MODE:-paper}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./workspace:/app/workspace
+      - ./data:/app/data
+    restart: unless-stopped
+    command: python /app/workspace/scripts/discord_bot/interactive_bot.py
+
+  # =============================================================================
+  # Saiyan Dashboard - Next.js Decision Engine UI
+  # =============================================================================
+  # Connects to trading-agent via Docker internal network.
+  # Access via IAP tunnel: gcloud compute ssh trading-vm -- -L 3000:localhost:3000
+  # Usage: docker compose --profile dashboard up -d saiyan-dashboard
+  saiyan-dashboard:
+    build:
+      context: ../saiyan-dashboard
+      dockerfile: Dockerfile
+    container_name: saiyan-dashboard
+    profiles:
+      - dashboard
+      - full
+    environment:
+      - GCP_GATEWAY_URL=http://trading-agent:8080
+      - GCP_GATEWAY_API_KEY=${GCP_GATEWAY_API_KEY:-saiyan-trade-2026}
+      - PAPER_TRADING_API_URL=http://trading-agent:8080
+      - NODE_ENV=production
+    ports:
+      - "3000:3000"
+    volumes:
+      - ${DASHBOARD_DATA_DIR:-../saiyan-dashboard/data}:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      trading-agent:
+        condition: service_healthy
+
+  # =============================================================================
+  # Trading Agent - Standalone GUI (connects to local IB Gateway)
+  # =============================================================================
+  trading-gui:
+    build: .
+    container_name: saiyan-gui
+    profiles:
+      - gui-only
+    environment:
+      - IB_HOST=${IB_HOST:-host.docker.internal}
+      - IB_PORT=${IB_PORT:-4002}
+      - IB_CLIENT_ID=${IB_CLIENT_ID:-90}
+      - IB_TRADING_MODE=${IB_TRADING_MODE:-paper}
+      - GUI_PORT=8080
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "${GUI_PORT:-8080}:8080"
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./data:/app/data
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: python -m tools.trading_gui

@@ -407,3 +407,98 @@ def is_volume_expansion(
     recent_ma = vol_ma.tail(lookback)
     
     return (recent_vol / recent_ma).mean() >= threshold
+
+
+def calculate_volume_profile_levels(
+    data: pd.DataFrame,
+    bins: int = 24,
+) -> Dict[str, float]:
+    """
+    Estimate profile levels (POC/VAH/VAL) from OHLCV bars.
+
+    This is a lightweight approximation that allocates each bar's volume
+    uniformly across its high-low range.
+    """
+    if data.empty:
+        return {"poc": np.nan, "vah": np.nan, "val": np.nan}
+
+    price_min = float(data["low"].min())
+    price_max = float(data["high"].max())
+    if not np.isfinite(price_min) or not np.isfinite(price_max) or price_max <= price_min:
+        mid = float(data["close"].iloc[-1]) if "close" in data.columns else np.nan
+        return {"poc": mid, "vah": mid, "val": mid}
+
+    edges = np.linspace(price_min, price_max, bins + 1)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    hist = np.zeros(bins, dtype=float)
+
+    for _, row in data.iterrows():
+        low = float(row["low"])
+        high = float(row["high"])
+        vol = float(row["volume"])
+        if not np.isfinite(low) or not np.isfinite(high) or not np.isfinite(vol) or vol <= 0:
+            continue
+        if high < low:
+            low, high = high, low
+
+        overlap = np.maximum(0.0, np.minimum(edges[1:], high) - np.maximum(edges[:-1], low))
+        total_overlap = overlap.sum()
+        if total_overlap > 0:
+            hist += vol * (overlap / total_overlap)
+        else:
+            idx = int(np.clip(np.searchsorted(centers, (low + high) / 2.0), 0, bins - 1))
+            hist[idx] += vol
+
+    if hist.sum() <= 0:
+        mid = float(data["close"].iloc[-1])
+        return {"poc": mid, "vah": mid, "val": mid}
+
+    poc_idx = int(np.argmax(hist))
+    poc = float(centers[poc_idx])
+
+    target = hist.sum() * 0.70
+    included = {poc_idx}
+    running = hist[poc_idx]
+    left = poc_idx - 1
+    right = poc_idx + 1
+    while running < target and (left >= 0 or right < bins):
+        left_vol = hist[left] if left >= 0 else -1
+        right_vol = hist[right] if right < bins else -1
+        if right_vol >= left_vol:
+            included.add(right)
+            running += max(0.0, right_vol)
+            right += 1
+        else:
+            included.add(left)
+            running += max(0.0, left_vol)
+            left -= 1
+
+    idx_min = min(included)
+    idx_max = max(included)
+    return {
+        "poc": poc,
+        "vah": float(edges[idx_max + 1]),
+        "val": float(edges[idx_min]),
+    }
+
+
+def rolling_volume_profile_levels(
+    data: pd.DataFrame,
+    window: int = 5,
+    bins: int = 24,
+) -> pd.DataFrame:
+    """
+    Rolling profile levels used for daily structure checks.
+    """
+    if data.empty:
+        return pd.DataFrame(index=data.index, columns=["poc", "vah", "val"], dtype=float)
+
+    rows = []
+    for i in range(len(data)):
+        if i + 1 < window:
+            rows.append({"poc": np.nan, "vah": np.nan, "val": np.nan})
+            continue
+        chunk = data.iloc[i + 1 - window : i + 1]
+        rows.append(calculate_volume_profile_levels(chunk, bins=bins))
+
+    return pd.DataFrame(rows, index=data.index)

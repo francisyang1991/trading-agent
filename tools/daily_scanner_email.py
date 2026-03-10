@@ -7,10 +7,10 @@ Runs `tools/scanner.py` on a schedule and emails the report to you.
 
 Two common ways to use this:
   1) Long-running scheduler (recommended if you want "always on"):
-     python tools/daily_scanner_email.py --daily --time 07:00 --theme high_conviction
+     python tools/daily_scanner_email.py --daily --time 07:00 --high-conviction
 
   2) Cron (recommended for simplicity/robustness):
-     python tools/daily_scanner_email.py --once --theme high_conviction
+     python tools/daily_scanner_email.py --once --high-conviction
 
 Email configuration is taken from environment variables:
   SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_USE_TLS
@@ -34,14 +34,16 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None
 
+from src.universe.universe_config import load_stock_universe
 from src.utils.emailer import (
     build_email_message,
     load_email_config_from_env,
+    load_email_config_from_settings_yaml,
     read_text_file_truncated,
     send_email_smtp,
 )
 
-from tools.scanner import load_universe, run_scan
+from tools.scanner import run_scan
 
 
 def _parse_hhmm(value: str) -> Tuple[int, int]:
@@ -66,10 +68,12 @@ def _next_run_at(hhmm: str) -> datetime:
 
 
 def _resolve_symbols(args) -> Tuple[List[str], Optional[str]]:
-    universe = load_universe()
+    universe = load_stock_universe()
     theme_name = None
 
-    if args.all:
+    if args.symbols:
+        symbols = [s.upper() for s in args.symbols]
+    elif args.all:
         symbols = universe.get("all_symbols", [])
         theme_name = "FULL UNIVERSE"
     elif args.theme:
@@ -82,8 +86,9 @@ def _resolve_symbols(args) -> Tuple[List[str], Optional[str]]:
             raise SystemExit(
                 f"Theme '{theme_key}' not found. Available: {', '.join(universe.get('themes', {}).keys())}"
             )
-    elif args.symbols:
-        symbols = [s.upper() for s in args.symbols]
+    elif args.high_conviction:
+        symbols = universe.get("high_conviction", ["NVDA", "GOOGL", "MSFT", "PLTR", "CRWD"])
+        theme_name = "HIGH CONVICTION"
     else:
         symbols = universe.get("high_conviction", ["NVDA", "GOOGL", "MSFT", "PLTR", "CRWD"])
         theme_name = "HIGH CONVICTION"
@@ -115,6 +120,9 @@ def run_scanner_and_email(args) -> str:
         raise RuntimeError(f"Report file not found after scan: {report_file}")
 
     smtp, email = load_email_config_from_env(prefix=args.env_prefix)
+    if smtp is None or email is None:
+        smtp, email = load_email_config_from_settings_yaml(args.settings)
+
     if smtp is None or email is None:
         if args.dry_run_email:
             print("⚠️ [DRY RUN] Email config not found; skipping SMTP send.")
@@ -179,10 +187,16 @@ def main():
     parser.add_argument("symbols", nargs="*", help="Symbols to scan (e.g. AAPL NVDA).")
     parser.add_argument("--theme", type=str, help="Theme key from config/stock_universe.yaml (e.g. crypto).")
     parser.add_argument("--all", action="store_true", help="Scan full universe.")
+    parser.add_argument("--high-conviction", action="store_true", help="Scan the high_conviction list.")
     parser.add_argument("--plan", action="store_true", help="Detailed plan mode (per-stock plans).")
     parser.add_argument("--quick", action="store_true", help="Quick scan mode only.")
 
     # Email / env
+    parser.add_argument(
+        "--settings",
+        default="config/settings.yaml",
+        help="Optional settings.yaml to read email defaults from (notifications.channels.email).",
+    )
     parser.add_argument("--env-file", default="", help="Optional dotenv file to load (e.g. .env or env.list).")
     parser.add_argument("--env-prefix", default="", help="Optional env var prefix (e.g. SAIYAN_).")
     parser.add_argument("--dry-run-email", action="store_true", help="Do everything except sending SMTP.")

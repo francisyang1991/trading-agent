@@ -1,0 +1,93 @@
+{
+  "name": "openclaw-workspace",
+  "version": "2.0.0",
+  "description": "OpenClaw AI Assistant workspace with Discord, WhatsApp, and stock analysis tools",
+  "main": "scripts/stock_message_analyzer.js",
+  "scripts": {
+    "start": "node scripts/stock_message_analyzer.js",
+    
+    "discord": "node scripts/discord_reader_service.js",
+    "whatsapp": "node scripts/whatsapp_web_service.js",
+    "whatsapp-business": "node scripts/whatsapp_business_service.js",
+    
+    "analyze": "node scripts/stock_message_analyzer.js",
+    "analyze:schedule": "./scripts/run_stock_analysis.sh --schedule",
+    
+    "monitor": "node scripts/realtime_monitor.js start",
+    "monitor:once": "node scripts/realtime_monitor.js once",
+    "monitor:test": "node scripts/realtime_monitor.js test",
+    "monitor:status": "node scripts/realtime_monitor.js status",
+    
+    "historical": "node scripts/historical_analyzer.js 1",
+    "historical:day": "node scripts/historical_analyzer.js 1",
+    "historical:week": "node scripts/historical_analyzer.js 7",
+    "historical:month": "node scripts/historical_analyzer.js 30",
+    "historical:test": "node scripts/historical_analyzer.js --test",
+    
+    "validate": "node scripts/signal_validator.js validate",
+    "validate:auto": "node scripts/signal_validator.js auto",
+    "validate:stats": "node scripts/signal_validator.js stats",
+    "validate:test": "node scripts/signal_validator.js test",
+    
+    "generate:signal": "node scripts/signal_generator.js",
+    
+    "options": "node scripts/options_calculator.js",
+    
+    "memory:stats": "node scripts/trading_memory.js",
+    
+    "test": "node scripts/local_test_runner.js all",
+    "test:analyzer": "node scripts/local_test_runner.js analyzer",
+    "test:generator": "node scripts/local_test_runner.js generator",
+    "test:memory": "node scripts/local_test_runner.js memory",
+    "test:options": "node scripts/local_test_runner.js options",
+    "test:scenarios": "node scripts/local_test_runner.js scenarios",
+    "test:integration": "node scripts/local_test_runner.js integration",
+    
+    "security": "./scripts/security_monitor.sh",
+    "startup": "node scripts/secure_startup.js",
+    "secrets:check": "node scripts/load_secrets.js check",
+    "secrets:load": "node scripts/load_secrets.js load",
+    "polymarket": "python3 scripts/polymarket_research.py",
+    
+    "help": "echo '\\n=== Available Commands ===\\n\\nReal-time Monitoring:\\n  npm run monitor        - Start real-time signal monitoring (5-min intervals)\\n  npm run monitor:once   - Run a single poll cycle\\n  npm run monitor:test   - Test with sample messages\\n  npm run monitor:status - Show monitor status\\n\\nHistorical Analysis:\\n  npm run historical     - Analyze last 1 day (default)\\n  npm run historical:day - Analyze last day\\n  npm run historical:week - Analyze last week\\n  npm run historical:month - Analyze last 30 days\\n  npm run historical:test - Test with sample data\\n\\nSignal Validation:\\n  npm run validate       - Validate all pending signals\\n  npm run validate:auto  - Start auto-validation loop\\n  npm run validate:stats - Show validation statistics\\n  npm run validate:test  - Test with mock signal\\n\\nTesting:\\n  npm run test           - Run all tests\\n  npm run test:analyzer  - Test message analyzer\\n  npm run test:generator - Test signal generator\\n  npm run test:memory    - Test trading memory\\n  npm run test:options   - Test options calculator\\n  npm run test:scenarios - Test predefined scenarios\\n  npm run test:integration - Test full pipeline\\n\\nUtilities:\\n  npm run memory:stats   - Show trading memory stats\\n  npm run options        - Test options calculator\\n  npm run generate:signal - Test signal generator\\n'"
+  },
+  "keywords": [
+    "discord",
+    "whatsapp",
+    "stock",
+    "trading",
+    "signals",
+    "analysis",
+    "openclaw",
+    "ai",
+    "options",
+    "realtime",
+    "validation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.400.0",
+    "@aws-sdk/client-sts": "^3.400.0",
+    "discord.js": "^14.14.1",
+    "express": "^4.18.2",
+    "puppeteer": "^21.6.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.23.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "files": [
+    "scripts/",
+    "config/",
+    "data/"
+  ]
+}

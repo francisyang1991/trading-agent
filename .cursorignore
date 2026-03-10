@@ -1,0 +1,102 @@
+# Cursor ignore file - excludes files from AI context to save tokens
+# Cursor uses semantic search and only loads relevant files, but excluding
+# large/unnecessary files helps reduce token usage significantly
+
+# ============================================================================
+# LARGE DATA FILES (Highest Priority - These are huge!)
+# ============================================================================
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/cache/
+data/historical/
+data/snapshots/
+data/universe_snapshots/
+workspace/data/
+
+# ============================================================================
+# RESULTS AND OUTPUTS (Generated files, not needed in context)
+# ============================================================================
+logs/
+*.log
+scan_results_*.txt
+test_report.txt
+
+# ============================================================================
+# VIRTUAL ENVIRONMENTS AND DEPENDENCIES
+# ============================================================================
+.venv/
+venv/
+.venv-*/
+env/
+ENV/
+node_modules/
+.pytest_cache/
+
+# ============================================================================
+# PYTHON CACHE AND BUILD ARTIFACTS
+# ============================================================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ============================================================================
+# TEST ARTIFACTS
+# ============================================================================
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+
+# ============================================================================
+# IDE AND EDITOR FILES
+# ============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ============================================================================
+# TEMPORARY AND BACKUP FILES
+# ============================================================================
+*.tmp
+*.bak
+*.backup
+*.parquet
+
+# ============================================================================
+# DOCKER AND DEPLOYMENT
+# ============================================================================
+docker-compose.override.yml
+*.tar.gz
+*.zip
+
+# ============================================================================
+# CONFIGURATION WITH SECRETS (Security)
+# ============================================================================
+.env
+env.list
+config/settings.local.yaml
+workspace/config/discord_servers.json
+
+# ============================================================================
+# LARGE BINARY FILES
+# ============================================================================
+*.pdf
+*.xlsx
+!config/*.csv
+
+# ============================================================================
+# JUPYTER NOTEBOOKS (if any)
+# ============================================================================
+.ipynb_checkpoints/
+*.ipynb

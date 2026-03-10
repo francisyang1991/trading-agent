@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 IBKR API Client Wrapper using ib_async
 Handles connection management, data requests, and order execution.
@@ -15,9 +17,13 @@ try:
     from ib_async.util import df
     IB_ASYNC_AVAILABLE = True
 except ImportError:
-    logger.warning("ib_async not installed. Install with: pip install ib_async")
+    pass  # Optional: ib_async only needed for live IBKR trading
     IB_ASYNC_AVAILABLE = False
     IB = None
+    # Provide safe fallbacks so type hints don't raise at import time
+    Stock = Contract = Order = Trade = BarData = None
+    MarketOrder = LimitOrder = StopOrder = None
+    df = None
 
 
 class IBKRClient:
@@ -486,6 +492,63 @@ class IBKRClient:
             del self._subscriptions[symbol]
             logger.info(f"Unsubscribed from {symbol}")
     
+    # =========================================================================
+    # Fundamental Data
+    # =========================================================================
+
+    def get_fundamental_data(
+        self,
+        symbol: str,
+        report_type: str = "ReportsFinSummary",
+    ) -> Optional[str]:
+        """
+        Fetch fundamental data (sync wrapper).
+
+        Args:
+            symbol: Stock ticker symbol
+            report_type: One of:
+                - ReportsFinSummary  (key ratios: ROE, margins, D/E)
+                - ReportsFinStatements  (quarterly income/balance/cashflow)
+                - RESC  (analyst estimates)
+                - CalendarReport  (earnings calendar)
+
+        Returns:
+            Raw XML string, or None on failure.
+
+        Note:
+            Requires "Reuters Global Fundamentals" subscription on your IBKR account.
+        """
+        if not self._loop:
+            self._loop = self._get_or_create_event_loop()
+        return self._loop.run_until_complete(
+            self.get_fundamental_data_async(symbol, report_type)
+        )
+
+    async def get_fundamental_data_async(
+        self,
+        symbol: str,
+        report_type: str = "ReportsFinSummary",
+    ) -> Optional[str]:
+        """Fetch fundamental data (async)."""
+        if not self.is_connected:
+            logger.error("Not connected to IBKR")
+            return None
+
+        contract = self.create_stock_contract(symbol)
+
+        try:
+            await self._ib.qualifyContractsAsync(contract)
+            xml = await self._ib.reqFundamentalDataAsync(
+                contract, reportType=report_type
+            )
+            if not xml:
+                logger.debug(f"No fundamental data for {symbol} ({report_type})")
+                return None
+            return xml
+        except Exception as e:
+            logger.error(f"Error fetching fundamental data for {symbol}: {e}")
+            return None
+
     # =========================================================================
     # Order Management
     # =========================================================================

@@ -1,0 +1,55 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.cursor/
+
+# Data (mount as volumes instead)
+data/stock_cache.db
+data/stock_cache.db-*
+data/snapshots/
+data/ib-gateway/
+logs/
+
+# Secrets
+env.list
+*.pem
+*.key
+credentials.json
+
+# Tests
+tests/
+test_*.py
+pytest.ini
+.pytest_cache/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Misc
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

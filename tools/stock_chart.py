@@ -14,18 +14,15 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import yfinance as yf
-import pandas as pd
 import numpy as np
+import pandas as pd
+import yfinance as yf
 import matplotlib.pyplot as plt
 from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
-
-def calculate_ema(data: pd.Series, period: int) -> pd.Series:
-    """Calculate Exponential Moving Average."""
-    return data.ewm(span=period, adjust=False).mean()
+from src.indicators.trend import calculate_ema_series
 
 
 def plot_stock_chart(symbol: str, period: str = "6mo", save_to_file: bool = False):
@@ -62,7 +59,7 @@ def plot_stock_chart(symbol: str, period: str = "6mo", save_to_file: bool = Fals
     
     for period_val in ema_periods:
         if len(data) >= period_val:
-            data[f'EMA{period_val}'] = calculate_ema(data['Close'], period_val)
+            data[f'EMA{period_val}'] = calculate_ema_series(data['Close'], period_val)
     
     # Create figure with subplots
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), 
