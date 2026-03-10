@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Nightly IB data ingest — launchd plist for Mac mini.
+
+  Install:
+    cp com.trading.ib-ingest-nightly.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.trading.ib-ingest-nightly.plist
+
+  Runs Mon-Fri at 17:30 PT (after market close).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.trading.ib-ingest-nightly</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/xiaodongyang/Documents/trading_agent/venv/bin/python</string>
+    <string>-m</string>
+    <string>ib_data_server.ingest</string>
+    <string>--bar-size</string>
+    <string>1 day</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/xiaodongyang/Documents/trading_agent</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>IB_HOST</key>
+    <string>127.0.0.1</string>
+    <key>IB_PORT</key>
+    <string>4002</string>
+    <key>IB_CLIENT_ID</key>
+    <string>10</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <!-- Mon-Fri at 17:30 local time -->
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/xiaodongyang/Documents/trading_agent/logs/ib_ingest.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/xiaodongyang/Documents/trading_agent/logs/ib_ingest_err.log</string>
+</dict>
+</plist>

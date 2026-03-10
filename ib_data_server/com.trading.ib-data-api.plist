@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  IB Data API Server — launchd plist for Mac mini.
+
+  Install:
+    cp com.trading.ib-data-api.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.trading.ib-data-api.plist
+
+  Runs on boot, auto-restarts on crash. Listens on port 8100.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.trading.ib-data-api</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/xiaodongyang/Documents/trading_agent/venv/bin/python</string>
+    <string>-m</string>
+    <string>ib_data_server.api</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/xiaodongyang/Documents/trading_agent</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>IB_DATA_PORT</key>
+    <string>8100</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/xiaodongyang/Documents/trading_agent/logs/ib_api.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/xiaodongyang/Documents/trading_agent/logs/ib_api_err.log</string>
+</dict>
+</plist>
