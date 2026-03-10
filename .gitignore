@@ -37,11 +37,10 @@ env/
 logs/
 *.log
 
-# Data
-data/cache/
-data/historical/
-data/snapshots/
-data/ib-gateway/
+# Runtime data and caches
+# Synced via snapshot tools or rebuilt locally, not versioned in git.
+data/*
+!data/.gitkeep
 *.parquet
 *.db
 *.db-shm
@@ -49,6 +48,8 @@ data/ib-gateway/
 
 # Results
 results/
+outputs/
+artifacts/data_snapshots/
 
 # Configuration with secrets
 config/settings.local.yaml
