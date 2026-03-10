@@ -14,6 +14,7 @@ from .position_limits import PositionLimits
 from .portfolio_limits import PortfolioLimits
 from .drawdown import DrawdownMonitor
 from .circuit_breaker import CircuitBreaker
+from .daily_risk_scan import DailyRiskScanner, PositionSnapshot, RiskAlert
 
 __all__ = [
     'RiskManager',
@@ -22,4 +23,7 @@ __all__ = [
     'PortfolioLimits',
     'DrawdownMonitor',
     'CircuitBreaker',
+    'DailyRiskScanner',
+    'PositionSnapshot',
+    'RiskAlert',
 ]

@@ -49,34 +49,34 @@ DEFAULT_WEIGHTS = {
 STRATEGY_MATRIX = {
     # (Regime, VolatilityLevel) -> (Strategy, base_position_pct, stop_pct, target_pct)
     (Regime.PARABOLIC, VolatilityLevel.LOW): (Strategy.BUY_HOLD, 0.15, 0.10, 0.50),
-    (Regime.PARABOLIC, VolatilityLevel.MODERATE): (Strategy.TRAILING_STOP, 0.12, 0.12, 0.40),
+    (Regime.PARABOLIC, VolatilityLevel.MEDIUM): (Strategy.TRAILING_STOP, 0.12, 0.12, 0.40),
     (Regime.PARABOLIC, VolatilityLevel.HIGH): (Strategy.TRAILING_STOP, 0.08, 0.15, 0.35),
-    (Regime.PARABOLIC, VolatilityLevel.ULTRA_HIGH): (Strategy.TRAILING_STOP, 0.05, 0.20, 0.30),
+    (Regime.PARABOLIC, VolatilityLevel.EXTREME): (Strategy.TRAILING_STOP, 0.05, 0.20, 0.30),
     
     (Regime.STRONG_UP, VolatilityLevel.LOW): (Strategy.TREND_FOLLOWING, 0.15, 0.08, 0.25),
-    (Regime.STRONG_UP, VolatilityLevel.MODERATE): (Strategy.TREND_FOLLOWING, 0.12, 0.10, 0.25),
+    (Regime.STRONG_UP, VolatilityLevel.MEDIUM): (Strategy.TREND_FOLLOWING, 0.12, 0.10, 0.25),
     (Regime.STRONG_UP, VolatilityLevel.HIGH): (Strategy.SWING_TRADE, 0.08, 0.12, 0.20),
-    (Regime.STRONG_UP, VolatilityLevel.ULTRA_HIGH): (Strategy.SWING_TRADE, 0.05, 0.15, 0.20),
+    (Regime.STRONG_UP, VolatilityLevel.EXTREME): (Strategy.SWING_TRADE, 0.05, 0.15, 0.20),
     
     (Regime.MODERATE_UP, VolatilityLevel.LOW): (Strategy.TREND_FOLLOWING, 0.15, 0.06, 0.15),
-    (Regime.MODERATE_UP, VolatilityLevel.MODERATE): (Strategy.TREND_FOLLOWING, 0.12, 0.08, 0.15),
+    (Regime.MODERATE_UP, VolatilityLevel.MEDIUM): (Strategy.TREND_FOLLOWING, 0.12, 0.08, 0.15),
     (Regime.MODERATE_UP, VolatilityLevel.HIGH): (Strategy.SWING_TRADE, 0.08, 0.10, 0.15),
-    (Regime.MODERATE_UP, VolatilityLevel.ULTRA_HIGH): (Strategy.SWING_TRADE, 0.05, 0.12, 0.15),
+    (Regime.MODERATE_UP, VolatilityLevel.EXTREME): (Strategy.SWING_TRADE, 0.05, 0.12, 0.15),
     
     (Regime.WEAK_UP, VolatilityLevel.LOW): (Strategy.SWING_TRADE, 0.12, 0.05, 0.10),
-    (Regime.WEAK_UP, VolatilityLevel.MODERATE): (Strategy.SWING_TRADE, 0.10, 0.06, 0.10),
+    (Regime.WEAK_UP, VolatilityLevel.MEDIUM): (Strategy.SWING_TRADE, 0.10, 0.06, 0.10),
     (Regime.WEAK_UP, VolatilityLevel.HIGH): (Strategy.MEAN_REVERSION, 0.08, 0.08, 0.10),
-    (Regime.WEAK_UP, VolatilityLevel.ULTRA_HIGH): (Strategy.MEAN_REVERSION, 0.05, 0.10, 0.10),
+    (Regime.WEAK_UP, VolatilityLevel.EXTREME): (Strategy.MEAN_REVERSION, 0.05, 0.10, 0.10),
     
     (Regime.SIDEWAYS, VolatilityLevel.LOW): (Strategy.MEAN_REVERSION, 0.12, 0.04, 0.08),
-    (Regime.SIDEWAYS, VolatilityLevel.MODERATE): (Strategy.MEAN_REVERSION, 0.10, 0.05, 0.08),
+    (Regime.SIDEWAYS, VolatilityLevel.MEDIUM): (Strategy.MEAN_REVERSION, 0.10, 0.05, 0.08),
     (Regime.SIDEWAYS, VolatilityLevel.HIGH): (Strategy.MEAN_REVERSION, 0.06, 0.08, 0.10),
-    (Regime.SIDEWAYS, VolatilityLevel.ULTRA_HIGH): (Strategy.STAY_CASH, 0.00, 0.00, 0.00),
+    (Regime.SIDEWAYS, VolatilityLevel.EXTREME): (Strategy.STAY_CASH, 0.00, 0.00, 0.00),
     
     (Regime.DOWNTREND, VolatilityLevel.LOW): (Strategy.STAY_CASH, 0.00, 0.00, 0.00),
-    (Regime.DOWNTREND, VolatilityLevel.MODERATE): (Strategy.STAY_CASH, 0.00, 0.00, 0.00),
+    (Regime.DOWNTREND, VolatilityLevel.MEDIUM): (Strategy.STAY_CASH, 0.00, 0.00, 0.00),
     (Regime.DOWNTREND, VolatilityLevel.HIGH): (Strategy.STAY_CASH, 0.00, 0.00, 0.00),
-    (Regime.DOWNTREND, VolatilityLevel.ULTRA_HIGH): (Strategy.STAY_CASH, 0.00, 0.00, 0.00),
+    (Regime.DOWNTREND, VolatilityLevel.EXTREME): (Strategy.STAY_CASH, 0.00, 0.00, 0.00),
 }
 
 
@@ -718,3 +718,137 @@ def pick_stocks(
     """
     picker = StockPicker(weights=weights, min_score=min_score, spy_data=spy_data)
     return picker.analyze(symbols, data_dict)
+
+
+@dataclass
+class TieredCandidate:
+    """Tiered picker output with explainable layer-level signals."""
+
+    ticker: str
+    date: datetime
+    tier: str
+    technical_pass: bool
+    fundamental_pass: bool
+    quality_pass: bool
+    rs_rank: float
+    composite_score: float
+    reason_tags: List[str] = field(default_factory=list)
+    metadata: Dict = field(default_factory=dict)
+
+
+class TieredStockPicker:
+    """
+    Picker-first engine with explicit tiers:
+    - Tier A: fundamental long-term (value + quality + growth)
+    - Tier B: swing momentum (RS + trend + near highs)
+    - Tier C: optional blended
+    """
+
+    def __init__(
+        self,
+        tier_a_score_min: float = 65.0,
+        tier_b_score_min: float = 60.0,
+        rs_threshold: float = 80.0,
+    ):
+        self.tier_a_score_min = tier_a_score_min
+        self.tier_b_score_min = tier_b_score_min
+        self.rs_threshold = rs_threshold
+
+    def _latest_rows(self, factor_table: pd.DataFrame) -> pd.DataFrame:
+        if factor_table.empty:
+            return factor_table
+        df = factor_table.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        idx = df.groupby("ticker")["date"].idxmax()
+        return df.loc[idx].copy()
+
+    def _score_tier_a(self, row: pd.Series) -> Tuple[float, List[str]]:
+        tags = []
+        score = 0.0
+        if row.get("eps_yoy", 0) >= 0.25:
+            score += 25
+            tags.append("eps_yoy>=25%")
+        if row.get("revenue_growth", 0) >= 0.15:
+            score += 20
+            tags.append("revenue_growth>=15%")
+        if row.get("roe", 0) >= 0.12:
+            score += 20
+            tags.append("roe>=12%")
+        if row.get("gm_rank", 0) >= 70:
+            score += 15
+            tags.append("gm_rank>=70")
+        if row.get("debt_to_equity", 0) <= 1.0:
+            score += 10
+            tags.append("debt_to_equity<=1")
+        if row.get("rs_rank", 0) >= 70:
+            score += 10
+            tags.append("rs_rank>=70")
+        return min(100.0, score), tags
+
+    def _score_tier_b(self, row: pd.Series) -> Tuple[float, List[str]]:
+        tags = []
+        score = 0.0
+        if bool(row.get("above_200ma", False)):
+            score += 25
+            tags.append("above_200ma")
+        if bool(row.get("near_52w", False)):
+            score += 20
+            tags.append("near_52w")
+        rs = float(row.get("rs_rank", 0))
+        if rs >= self.rs_threshold:
+            score += 25
+            tags.append(f"rs_rank>={int(self.rs_threshold)}")
+        elif rs >= 70:
+            score += 10
+            tags.append("rs_rank>=70")
+        if float(row.get("volume_ratio", 1.0)) >= 1.2:
+            score += 15
+            tags.append("volume_expansion")
+        if float(row.get("momentum_3m", 0)) > 0:
+            score += 15
+            tags.append("positive_3m_momentum")
+        return min(100.0, score), tags
+
+    def build_candidates(self, factor_table: pd.DataFrame) -> List[TieredCandidate]:
+        latest = self._latest_rows(factor_table)
+        if latest.empty:
+            return []
+
+        candidates: List[TieredCandidate] = []
+        for _, row in latest.iterrows():
+            tier_a_score, tier_a_tags = self._score_tier_a(row)
+            tier_b_score, tier_b_tags = self._score_tier_b(row)
+            technical_pass = bool(row.get("above_200ma", False)) and bool(row.get("near_52w", False))
+            fundamental_pass = float(row.get("eps_yoy", 0)) >= 0.25 and float(row.get("revenue_growth", 0)) >= 0.10
+            quality_pass = float(row.get("roe", 0)) >= 0.10 and float(row.get("gm_rank", 0)) >= 60
+
+            tier = "C"
+            score = max(tier_a_score, tier_b_score)
+            tags = []
+            if tier_a_score >= self.tier_a_score_min and fundamental_pass and quality_pass:
+                tier = "A"
+                tags = tier_a_tags
+            elif tier_b_score >= self.tier_b_score_min and technical_pass:
+                tier = "B"
+                tags = tier_b_tags
+
+            candidates.append(
+                TieredCandidate(
+                    ticker=str(row["ticker"]),
+                    date=pd.to_datetime(row["date"]).to_pydatetime(),
+                    tier=tier,
+                    technical_pass=technical_pass,
+                    fundamental_pass=fundamental_pass,
+                    quality_pass=quality_pass,
+                    rs_rank=float(row.get("rs_rank", 0)),
+                    composite_score=score,
+                    reason_tags=tags,
+                    metadata={
+                        "tier_a_score": tier_a_score,
+                        "tier_b_score": tier_b_score,
+                    },
+                )
+            )
+
+        candidates.sort(key=lambda x: x.composite_score, reverse=True)
+        return candidates

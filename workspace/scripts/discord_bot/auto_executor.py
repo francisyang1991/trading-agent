@@ -40,6 +40,8 @@ async def execute_approved_trades(channel_send_fn=None):
     """
     if not os.path.exists(APPROVED_FILE):
         log.info("No approved trades file found.")
+        if channel_send_fn:
+            await channel_send_fn("🌅 **Market Open Execution**\nNo approved trades file found — nothing to execute.")
         return
 
     try:
@@ -52,6 +54,8 @@ async def execute_approved_trades(channel_send_fn=None):
     pending = [t for t in trades if t.get('status') == 'pending']
     if not pending:
         log.info("No pending trades to execute.")
+        if channel_send_fn:
+            await channel_send_fn("🌅 **Market Open Execution**\nNo pending approved trades.")
         return
 
     if channel_send_fn:
@@ -80,8 +84,9 @@ async def execute_approved_trades(channel_send_fn=None):
             if channel_send_fn:
                 # Format success message
                 order_id = result.get('order_id')
-                price = params.get('price')
-                await channel_send_fn(f"✅ **Executed {ticker}**\n   Order ID: {order_id}\n   Limit: ${price}\n   Status: Placed")
+                price = params.get('limit_price', 'MKT')
+                price_text = f"${price}" if isinstance(price, (int, float)) else str(price)
+                await channel_send_fn(f"✅ **Executed {ticker}**\n   Order ID: {order_id}\n   Limit: {price_text}\n   Status: Placed")
         else:
             trade['status'] = 'failed'
             trade['error'] = result.get('error')

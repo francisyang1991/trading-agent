@@ -45,6 +45,9 @@ class VolatilityLevel(Enum):
     HIGH = "HIGH"                 # 50-80%
     MEDIUM = "MEDIUM"             # 30-50%
     LOW = "LOW"                   # <30%
+    # Backward-compatible aliases used by older modules/tests.
+    MODERATE = "MEDIUM"
+    ULTRA_HIGH = "EXTREME"
 
 
 class SignalType(Enum):
