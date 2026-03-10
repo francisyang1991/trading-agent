@@ -1,0 +1,62 @@
+---
+description: Project-level code standards for consistent, concise development. Do not reinvent wheels.
+alwaysApply: true
+---
+
+# Code Standards
+
+## Module Organization
+
+### src/ - Core Library
+- No CLI argument parsing
+- No direct `print()` (use logging)
+- Pure functions where possible
+- Well-documented, unit testable
+
+### tools/ - CLI Wrappers
+- **Import only from `src/`**; never `from tools.X import`
+- Handle argument parsing, format output for humans
+- Minimal business logic (delegate to `src/`)
+
+### scripts/ - System Scripts
+- Cron jobs, schedulers, setup only
+- No Python logic (call via `python -m tools.X`)
+
+## Shared Utilities (No Reinventing Wheels)
+
+| Capability | Canonical Location |
+|------------|-------------------|
+| EMA, RSI, ATR | `src/indicators/trend.py` |
+| Regime/Volatility | `src/regime/` |
+| Strategy matrix, EV | `src/strategy/` |
+| Data access | `src/data_manager.py` (cached) |
+
+**Indicators**: Use `calculate_ema_series`, `calculate_rsi_series`, `calculate_atr_series` from `src.indicators.trend` for Series. Use `calculate_atr`, `calculate_rsi`, `calculate_emas` for DataFrame (lowercase keys: `close`, `high`, `low`).
+
+## Logging
+- Use `loguru` via `from loguru import logger`
+- Tools may use `print()` for user-facing output; use `logger` for diagnostics/errors
+
+## Error Handling
+- Unexpected: Re-raise after logging (`logger.exception(...); raise`)
+- Expected "not found": Return `None` or `Optional[T]`
+- Document in docstrings
+
+## Type Hints
+- All public functions: parameter and return types
+- Use `Optional[T]`, `List[T]` from `typing`
+
+## Naming
+- OHLCV in `src/`: lowercase (`close`, `high`, `low`)
+- Module names: snake_case
+- Class names: PascalCase
+
+## Data Access
+- Cache-first: Use `CachedDataManager` from `src/data_manager.py`
+- Validate freshness before backtesting
+- No direct yfinance in backtests; fix cache layer instead
+
+## Backtest Validity
+- Include commission and slippage
+- Walk-forward or holdout validation
+- Compare to B&H and/or SPY

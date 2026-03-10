@@ -2,7 +2,7 @@
 
 This guide covers deploying the trading agent system on Google Cloud Platform for 24/7 operation.
 
-> **Before You Start: Read [DEPLOYMENT_LESSONS.md](./DEPLOYMENT_LESSONS.md)**
+> **Before You Start: Read [DEPLOYMENT_LESSONS.md](DEPLOYMENT_LESSONS.md)**
 >
 > This document contains critical lessons learned from real deployments, including solutions to the 7 most common issues that cause deployments to fail. Every deployment will encounter at least 2-3 of these. Read it first!
 
@@ -36,7 +36,41 @@ This guide covers deploying the trading agent system on Google Cloud Platform fo
 
 ---
 
-## Step 1: Create GCP Project
+## Step 0: Authenticate and Preflight gcloud (Required)
+
+Run these commands from your local machine before any VM commands:
+
+```bash
+# Authenticate CLI user account
+gcloud auth login
+
+# Authenticate Application Default Credentials (needed by many tools/SDKs)
+gcloud auth application-default login
+
+# Verify authenticated account
+gcloud auth list
+
+# Optional: stop interactive prompts in scripts/docs
+gcloud config set core/disable_prompts true
+```
+
+If your project was created elsewhere (or inherited from an older setup), ensure core APIs are enabled first:
+
+```bash
+gcloud services enable \
+    cloudresourcemanager.googleapis.com \
+    serviceusage.googleapis.com \
+    compute.googleapis.com \
+    iap.googleapis.com \
+    --project=saiyan-trading-20260203
+```
+
+> If `gcloud config list` prompts to enable `cloudresourcemanager.googleapis.com`, enable it first.  
+> This is a project-side API state issue, not a local machine issue.
+
+---
+
+## Step 1: Create or Select GCP Project
 
 ```bash
 # Create new project
@@ -214,11 +248,11 @@ chmod 600 .env env.list
 
 ```bash
 # Start services
-docker-compose up -d
+docker compose up -d
 
 # Check logs
-docker-compose logs -f ibgateway
-docker-compose logs -f trading-agent
+docker compose logs -f ibgateway
+docker compose logs -f trading-agent
 
 # Verify IB Gateway is connected
 docker exec ibgateway cat /root/Jts/*/log*.txt | tail -20
@@ -324,6 +358,49 @@ Create alerts for:
 
 ---
 
+## Switch to Live (Production) Mode
+
+Live mode uses **separate credentials** in `env.live.list` (paper stays in `env.list`).
+
+### Setup (one-time)
+
+1. **Create env.live.list** with your LIVE IBKR credentials:
+   ```bash
+   cd /home/francisyang/trading-agent
+   sudo nano env.live.list   # or: sudo vim env.live.list
+   # Set IB_USERNAME and IB_PASSWORD to your LIVE account (not paper)
+   ```
+
+2. **Deploy live profile files** (if not already present):
+   - `env.live.example` → template
+   - `docker-compose.live.yaml` → override for live mode
+   - `switch_to_live.sh`, `switch_to_paper.sh` → switch scripts
+
+### Switch to Live
+
+```bash
+gcloud compute ssh trading-vm --zone=us-east1-b
+cd /home/francisyang/trading-agent
+sudo ./switch_to_live.sh
+```
+
+### Switch back to Paper
+
+```bash
+sudo ./switch_to_paper.sh
+```
+
+### Verify
+
+```bash
+curl -s http://localhost:8080/api/health | jq '.trading_mode'
+# Should output: "live" when in live mode
+```
+
+**TrustedIPs note:** If you get `TimeoutError` connecting to the gateway in live mode, port 4001 may be blocked. Add a socat proxy for 4001 or configure IB Gateway's `jts.ini` to allow the Docker network.
+
+---
+
 ## Quick Commands Reference
 
 ```bash
@@ -334,16 +411,16 @@ gcloud compute ssh trading-vm --zone=us-east1-b
 gcloud compute start-iap-tunnel trading-vm 8080 --local-host-port=localhost:8080 --zone=us-east1-b
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 
 # Restart services
-docker-compose restart
+docker compose restart
 
 # Stop everything
-docker-compose down
+docker compose down
 
 # Update trading agent
-git pull && docker-compose build && docker-compose up -d
+git pull && docker compose build && docker compose up -d
 
 # Check IB Gateway connection
 docker exec ibgateway netstat -an | grep 4002
@@ -353,7 +430,7 @@ docker exec ibgateway netstat -an | grep 4002
 
 ## Troubleshooting
 
-> **CRITICAL: Read [DEPLOYMENT_LESSONS.md](./DEPLOYMENT_LESSONS.md) before debugging!**
+> **CRITICAL: Read [DEPLOYMENT_LESSONS.md](DEPLOYMENT_LESSONS.md) before debugging!**
 > It contains solutions to the 7 most common deployment issues.
 
 ### IB Gateway Won't Connect
