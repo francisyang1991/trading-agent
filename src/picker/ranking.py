@@ -254,19 +254,3 @@ def rank_picks(
     return ranked
 
 
-def rank_tiered_candidates(candidates: List) -> List:
-    """
-    Rank tiered candidates by tier priority then composite score.
-    Compatible with TieredCandidate-like objects.
-    """
-    tier_priority = {"A": 3, "B": 2, "C": 1}
-    ordered = sorted(
-        candidates,
-        key=lambda c: (
-            tier_priority.get(getattr(c, "tier", "C"), 0),
-            getattr(c, "composite_score", 0),
-            getattr(c, "rs_rank", 0),
-        ),
-        reverse=True,
-    )
-    return ordered

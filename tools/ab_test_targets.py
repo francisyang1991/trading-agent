@@ -8,80 +8,42 @@ import argparse
 from dataclasses import asdict
 from pathlib import Path
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
-import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.tools.pattern_backtest import scan_symbol, clean_symbols
-from src.signals.entry.volume_pullback_entry import VolumePullbackEntrySignal, VolumePullbackConfig
-
-
-def load_universe(path: Path):
-    with open(path, "r") as f:
-        universe = yaml.safe_load(f)
-    return clean_symbols(universe.get("all_symbols", []))
+from src.signals.entry.volume_pullback_entry import VolumePullbackConfig
+from src.tools.ab_test_shared import load_universe, run_pattern_sweep
 
 
 def run_variant(symbols, period, config, args, label):
-    signal_gen = VolumePullbackEntrySignal(config=config)
-    patterns = []
-    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-        futures = {
-            executor.submit(
-                scan_symbol,
-                s,
-                period,
-                signal_gen,
-                args.min_confidence,
-                5,
-                args.max_hold_bars,
-                args.include_wait,
-                0.0,
-                args.fallback_win_gain,
-                args.fallback_loss,
-                True,
-                args.score_full,
-                args.score_half,
-                args.score_quarter,
-                args.score_min,
-                args.earnings_window_days,
-                30,
-                False,
-                8.0,
-                args.min_avg_volume,
-            ): s
-            for s in symbols
-        }
-        for future in as_completed(futures):
-            _, rows = future.result()
-            patterns.extend(rows)
-    filtered = [
-        p for p in patterns
-        if p.outcome in ("SUCCESS", "FAILURE") and p.days_to_outcome >= args.min_days_to_outcome
-    ]
-    total = len(filtered)
-    wins = sum(1 for p in filtered if p.outcome == "SUCCESS")
-    win_rate = (wins / total * 100) if total else 0.0
-    total_weight = sum(p.size_factor for p in filtered) or 0.0
-    weighted_win_rate = (
-        sum(p.size_factor for p in filtered if p.outcome == "SUCCESS") / total_weight * 100
-        if total_weight else 0.0
-    )
-    weighted_ev = (
-        sum(p.weighted_outcome_pct for p in filtered) / total_weight
-        if total_weight else 0.0
+    _, metrics = run_pattern_sweep(
+        symbols=symbols,
+        period=period,
+        config=config,
+        min_confidence=args.min_confidence,
+        min_days_to_outcome=args.min_days_to_outcome,
+        include_wait=args.include_wait,
+        max_hold_bars=args.max_hold_bars,
+        fallback_win_gain=args.fallback_win_gain,
+        fallback_loss=args.fallback_loss,
+        score_full=args.score_full,
+        score_half=args.score_half,
+        score_quarter=args.score_quarter,
+        score_min=args.score_min,
+        earnings_window_days=args.earnings_window_days,
+        max_workers=args.max_workers,
+        min_avg_volume=getattr(args, "min_avg_volume", 8.0),
     )
     return {
         "variant": label,
         "target_method": config.target_method,
-        "patterns": total,
-        "win_rate": round(win_rate, 2),
-        "weighted_win_rate": round(weighted_win_rate, 2),
-        "weighted_ev": round(weighted_ev, 2),
+        "patterns": metrics["total"],
+        "win_rate": metrics["win_rate"],
+        "weighted_win_rate": metrics["weighted_win_rate"],
+        "weighted_ev": metrics["weighted_ev"],
         "config": asdict(config),
     }
 

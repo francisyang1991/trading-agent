@@ -25,7 +25,7 @@ def fetch_messages(channel_id, params):
     try:
         r = requests.get(url, headers=headers, params=params)
         if r.status_code == 429:
-            retry_after = float(r.json().get('retry_after', 1))
+            retry_after = float(r.json().get('retry_after', 1)) + 1.5 # Added buffer to backoff
             print(f"Rate limited. Waiting {retry_after}s...")
             time.sleep(retry_after)
             return fetch_messages(channel_id, params)
@@ -73,7 +73,7 @@ def retrieve_historical(channel_id, days=60):
         if batch_valid == 0: # All messages in batch were too old
             break
             
-        time.sleep(0.5)
+        time.sleep(2.0) # Increased delay to prevent rate limits
         
     return collected
 
@@ -106,7 +106,7 @@ def retrieve_new(channel_id, last_known_id):
         # So the last message in the list is the newest.
         current_after = messages[-1]['id']
         
-        time.sleep(0.5)
+        time.sleep(2.0) # Increased delay to prevent rate limits
         
     return collected
 

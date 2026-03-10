@@ -69,7 +69,7 @@ class FundamentalSnapshotService:
             rows.append(snapshot)
             persistent_map[symbol] = snapshot
             self._report_progress(idx, total, start, progress_every)
-            time.sleep(0.02)
+            time.sleep(0.01)  # Rate-limit Yahoo API
 
         if use_persistent_cache:
             self._save_persistent(run_date, persistent_map)
@@ -377,7 +377,8 @@ class FundamentalSnapshotService:
     def _report_progress(self, idx: int, total: int, start: float, progress_every: int) -> None:
         if idx % progress_every == 0 or idx == total:
             elapsed = time.time() - start
-            print(f"[fundamentals] {idx}/{total} ({elapsed:.1f}s)")
+            pct = 100 * idx / total if total else 0
+            print(f"[fundamentals] {idx}/{total} ({pct:.1f}%) {elapsed:.1f}s")
 
     def _to_frame(self, rows: list[Dict]) -> pd.DataFrame:
         df = pd.DataFrame(rows)

@@ -162,6 +162,49 @@ class ExitEngine:
                 exit_signals[symbol] = signal
         
         return exit_signals
+
+    def check_all_positions(
+        self,
+        positions: List[Position],
+        prices: Dict[str, float],
+        data_dict: Dict[str, pd.DataFrame],
+        timestamp: Optional[datetime] = None
+    ) -> List[Dict]:
+        """
+        Batch exit check: for each position, determine if we should exit today
+        at today's price (or given timestamp price).
+        
+        Modular pipeline interface: input positions + prices + timestamp,
+        output exit signals per position for downstream.
+        
+        Args:
+            positions: All current positions
+            prices: Current price per symbol (e.g. today's close or given timestamp)
+            data_dict: OHLCV DataFrames per symbol (for trailing stop, profit target)
+            timestamp: Evaluation time (default: now)
+            
+        Returns:
+            List of exit signals: [{"symbol", "exit_price", "exit_date", "exit_reason", "exit_pct"}, ...]
+        """
+        signals = self.check_exits_batch(
+            positions=positions,
+            prices=prices,
+            data_dict=data_dict,
+            current_time=timestamp or datetime.now()
+        )
+        out = []
+        ts = timestamp or datetime.now()
+        exit_date = ts.strftime("%Y-%m-%d")
+        for symbol, sig in signals.items():
+            meta = sig.metadata or {}
+            out.append({
+                "symbol": symbol,
+                "exit_price": sig.price,
+                "exit_date": exit_date,
+                "exit_reason": meta.get("exit_reason", meta.get("exit_type", "exit")),
+                "exit_pct": meta.get("exit_pct", 1.0),
+            })
+        return out
     
     def _check_hard_stop(
         self,

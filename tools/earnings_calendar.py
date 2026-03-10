@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.data.blacklist_store import DataBlacklistStore
 from src.data_manager import DataManager
 from src.universe.listed_symbols import load_all_listed_us_symbols
 
@@ -88,12 +89,15 @@ def run(args) -> int:
     print(f"Window: {from_date} -> {to_date}")
 
     dm = DataManager()
+    blacklist_store = DataBlacklistStore(dm)
+    no_earnings: List[str] = []
 
     rows = []
     total = len(symbols)
     for i, sym in enumerate(symbols, 1):
         cal = dm.get_earnings_calendar(sym)
         if cal is None or cal.empty:
+            no_earnings.append(sym)
             if i % args.progress_every == 0 or i == total:
                 print(f"  [calendar] {i}/{total} rows={len(rows)}")
             continue
@@ -153,6 +157,13 @@ def run(args) -> int:
 
     print(f"\nSaved: {out_path}")
     print(out.head(args.preview_rows).to_string(index=False))
+
+    if no_earnings:
+        blacklist_store.save(
+            {s.upper() for s in no_earnings},
+            reason="no_earnings_dates_may_be_delisted",
+        )
+
     return 0
 
 

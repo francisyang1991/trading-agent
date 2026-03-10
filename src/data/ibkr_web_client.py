@@ -21,7 +21,7 @@ try:
     HTTPX_AVAILABLE = True
 except ImportError:
     HTTPX_AVAILABLE = False
-    logger.warning("httpx not installed. Install with: pip install httpx")
+    pass  # Optional: httpx only needed for IBKR Web API
 
 
 class IBKRWebClient:

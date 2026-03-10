@@ -15,7 +15,6 @@ Architecture:
 """
 
 import os
-import sys
 import json
 import re
 import asyncio
@@ -232,10 +231,12 @@ def get_price_context(ticker: str) -> Dict:
     if ticker in ibkr:
         return {'current_price': ibkr[ticker]}
 
-    # Fallback: yfinance via llm_analyzer
+    # Fallback: shared LLM context provider (yfinance-backed)
     try:
-        sys.path.append(os.path.join(os.path.dirname(__file__), '../core_analysis'))
-        from llm_analyzer import get_stock_context
+        try:
+            from .llm_shared import get_stock_context
+        except ImportError:
+            from llm_shared import get_stock_context
         ctx = get_stock_context(ticker)
         if ctx and 'error' not in ctx:
             return ctx
@@ -342,8 +343,12 @@ def build_candidates(
 def _compute_conviction(c: SignalCandidate) -> float:
     """
     Compute conviction score (0-10) from all signal components.
+    Supports both LONG and SHORT signals.
     """
     score = 0.0
+
+    # Detect if this is a short candidate
+    is_short_setup = 'SHORT' in c.scanner_action.upper()
 
     # Discord signal strength (0-3 points)
     if c.discord_mentions >= 5:
@@ -353,18 +358,27 @@ def _compute_conviction(c: SignalCandidate) -> float:
     elif c.discord_mentions >= 1:
         score += 0.5
 
-    if c.discord_bullish > c.discord_bearish:
-        score += min((c.discord_bullish - c.discord_bearish) * 0.5, 1.0)
-    elif c.discord_bearish > c.discord_bullish:
-        score -= 0.5  # Negative for bearish bias
+    if is_short_setup:
+        # For shorts: bearish Discord sentiment is bullish for the trade
+        if c.discord_bearish > c.discord_bullish:
+            score += min((c.discord_bearish - c.discord_bullish) * 0.5, 1.0)
+        elif c.discord_bullish > c.discord_bearish * 2:
+            score -= 0.5  # Too bullish for a short
+    else:
+        if c.discord_bullish > c.discord_bearish:
+            score += min((c.discord_bullish - c.discord_bearish) * 0.5, 1.0)
+        elif c.discord_bearish > c.discord_bullish:
+            score -= 0.5  # Negative for bearish bias
 
     # Scanner signals (0-4 points)
     action = c.scanner_action.upper()
-    if 'BUY' in action:
+    if 'SHORT' in action:
+        score += 2.5    # Short signal from scanner = high conviction
+    elif 'BUY' in action:
         score += 2.5
     elif 'WAIT' in action:
         score += 1.0
-    # No points for SELL/empty
+    # No points for SELL/AVOID/empty
 
     if c.scanner_ev > 0:
         score += min(c.scanner_ev / 2, 1.0)  # Up to 1 point for positive EV
@@ -372,17 +386,33 @@ def _compute_conviction(c: SignalCandidate) -> float:
         score += 0.5
 
     # Technical alignment (0-3 points)
-    if 30 < c.rsi < 60:  # Healthy RSI range for entries
-        score += 1.0
-    elif c.rsi <= 30:  # Oversold — potential bounce
-        score += 0.5
+    if is_short_setup:
+        # For shorts: overbought RSI is GOOD (short at resistance)
+        if c.rsi > 65:
+            score += 1.5  # Overbought = prime short territory
+        elif c.rsi > 55:
+            score += 1.0  # Bounce into resistance
+        elif c.rsi > 45:
+            score += 0.3  # Neutral — acceptable
 
-    if c.current_price > 0 and c.scanner_buy_low > 0:
-        # Price near buy zone = better
-        if c.scanner_buy_low <= c.current_price <= c.scanner_buy_high:
-            score += 1.5  # In the buy zone!
-        elif c.current_price < c.scanner_buy_low * 1.02:
-            score += 0.5  # Close to buy zone
+        # Price near short zone (repurposed buy zone = short target zone)
+        if c.current_price > 0 and c.scanner_buy_high > 0:
+            # For shorts, buy_zone fields are repurposed as target zone
+            # Higher score if price is above target (more room to fall)
+            if c.current_price > c.scanner_buy_high:
+                score += 1.0
+    else:
+        if 30 < c.rsi < 60:  # Healthy RSI range for entries
+            score += 1.0
+        elif c.rsi <= 30:  # Oversold — potential bounce
+            score += 0.5
+
+        if c.current_price > 0 and c.scanner_buy_low > 0:
+            # Price near buy zone = better
+            if c.scanner_buy_low <= c.current_price <= c.scanner_buy_high:
+                score += 1.5  # In the buy zone!
+            elif c.current_price < c.scanner_buy_low * 1.02:
+                score += 0.5  # Close to buy zone
 
     # Trader grade boost (learned from historical performance)
     score += c.trader_grade_boost  # -1 to +1 from signal_tracker grades
@@ -398,10 +428,30 @@ def _compute_conviction(c: SignalCandidate) -> float:
 
 
 def _determine_action(c: SignalCandidate) -> str:
-    """Determine recommended action based on conviction and signals."""
+    """
+    Determine recommended action based on conviction, signals, and regime.
+
+    Actions:
+        BUY        — Long entry with high conviction
+        SHORT      — Short entry (downtrend pop-up or sideways mean reversion)
+        WAIT       — Actionable but not yet at ideal entry
+        AVOID      — Strong bearish bias, stay away
+        NO_TRADE   — Insufficient signal
+    """
+    is_short_scanner = 'SHORT' in c.scanner_action.upper()
+
+    # If scanner explicitly says SHORT and conviction is decent, follow it
+    if is_short_scanner and c.conviction_score >= 4.5:
+        return "SHORT"
+
+    # Standard long actions
     if c.conviction_score >= 6.0:
+        if is_short_scanner:
+            return "SHORT"  # High conviction short
         return "BUY"
     elif c.conviction_score >= 4.0:
+        if is_short_scanner:
+            return "SHORT" if c.conviction_score >= 5.0 else "WAIT"
         return "WAIT"
     elif c.discord_bearish > c.discord_bullish * 2:
         return "AVOID"
@@ -436,22 +486,32 @@ def format_nightly_digest(candidates: List[SignalCandidate], top_n: int = 5) -> 
 
     # Each candidate
     for i, c in enumerate(top, 1):
-        icon = {"BUY": "🟢", "WAIT": "🟡", "AVOID": "🔴"}.get(c.action, "⚪")
+        icon = {"BUY": "🟢", "SHORT": "🟣", "WAIT": "🟡", "AVOID": "🔴"}.get(c.action, "⚪")
 
         lines = [f"\n{icon} *#{i} ${c.ticker}* — {c.action} (Score: {c.conviction_score:.1f}/10)"]
 
         if c.current_price:
             lines.append(f"💰 Price: ${c.current_price:.2f} | RSI: {c.rsi:.0f}")
 
-        if c.scanner_buy_low and c.scanner_buy_high:
-            lines.append(f"🎯 Buy Zone: ${c.scanner_buy_low:.2f} – ${c.scanner_buy_high:.2f}")
-        if c.scanner_stop:
-            lines.append(f"🛑 Stop: ${c.scanner_stop:.2f}")
-        if c.scanner_target_1:
-            tgt = f"${c.scanner_target_1:.2f}"
-            if c.scanner_target_2:
-                tgt += f" / ${c.scanner_target_2:.2f}"
-            lines.append(f"✅ Targets: {tgt}")
+        if c.action == "SHORT":
+            # Short-specific display: entry at market, stop above, targets below
+            if c.scanner_stop:
+                lines.append(f"🛑 Stop (above): ${c.scanner_stop:.2f}")
+            if c.scanner_target_1:
+                tgt = f"${c.scanner_target_1:.2f}"
+                if c.scanner_target_2:
+                    tgt += f" / ${c.scanner_target_2:.2f}"
+                lines.append(f"🎯 Short Targets: {tgt}")
+        else:
+            if c.scanner_buy_low and c.scanner_buy_high:
+                lines.append(f"🎯 Buy Zone: ${c.scanner_buy_low:.2f} – ${c.scanner_buy_high:.2f}")
+            if c.scanner_stop:
+                lines.append(f"🛑 Stop: ${c.scanner_stop:.2f}")
+            if c.scanner_target_1:
+                tgt = f"${c.scanner_target_1:.2f}"
+                if c.scanner_target_2:
+                    tgt += f" / ${c.scanner_target_2:.2f}"
+                lines.append(f"✅ Targets: {tgt}")
 
         if c.scanner_ev:
             lines.append(f"⚖️ EV: {c.scanner_ev:.1f}% | R:R {c.scanner_rr:.1f}:1 | WR {c.scanner_win_rate * 100:.0f}%")
@@ -468,7 +528,7 @@ def format_nightly_digest(candidates: List[SignalCandidate], top_n: int = 5) -> 
         if c.scanner_position_pct:
             lines.append(f"📐 Suggested size: {c.scanner_position_pct * 100:.1f}% of portfolio")
 
-        lines.append(f"\n💡 To approve: `!approve {c.ticker}`")
+        lines.append(f"\n💡 Next: run `!analyze {c.ticker}` for detail, then track with `!portfolio`.")
 
         messages.append("\n".join(lines))
 
@@ -476,8 +536,7 @@ def format_nightly_digest(candidates: List[SignalCandidate], top_n: int = 5) -> 
     footer = (
         f"\n{'─' * 40}\n"
         f"📋 *Commands:*\n"
-        f"• `!approve TICKER` — Queue limit order at buy zone\n"
-        f"• `!approve TICKER market` — Queue market order\n"
+        f"• `!pipeline` — Refresh candidates and paper auto-trading flow\n"
         f"• `!portfolio` — Position management suggestions\n"
         f"• `!analyze TICKER` — Deep dive on any ticker"
     )
@@ -511,6 +570,7 @@ CANDIDATES:
 
 For each actionable ticker:
 🟢 $TICKER — BUY: entry zone, stop, target, position size, why
+🟣 $TICKER — SHORT: entry, stop above resistance, target, size, why
 🟡 $TICKER — WAIT: what trigger to watch
 🔴 $TICKER — AVOID: why
 
@@ -524,33 +584,45 @@ End with 1-line market outlook. Use single asterisks for bold. Be specific with 
 def generate_order_params(candidate: SignalCandidate, order_type: str = "limit") -> Dict:
     """
     Generate trade API parameters from a candidate.
+    Supports both BUY (long) and SHORT (sell) orders.
 
     Returns dict ready to POST to /api/trade.
     """
+    is_short = candidate.action == "SHORT"
+    trade_action = "SELL" if is_short else "BUY"
+
     if order_type == "market":
         return {
             "ticker": candidate.ticker,
-            "action": candidate.action if candidate.action in ("BUY", "SELL") else "BUY",
+            "action": trade_action,
             "limit_price": 0,
             "order_type": "MKT",
             "source": "pipeline-auto",
-            "position_size_pct": candidate.scanner_position_pct or 0.02,
+            "position_size_pct": candidate.scanner_position_pct or (0.015 if is_short else 0.02),
+            "side": "SHORT" if is_short else "LONG",
         }
 
-    # Limit order at buy zone midpoint
-    entry_price = (candidate.scanner_buy_low + candidate.scanner_buy_high) / 2 if candidate.scanner_buy_low else candidate.current_price
-    stop_price = candidate.scanner_stop or (entry_price * 0.97)
-    target_price = candidate.scanner_target_1 or (entry_price * 1.06)
+    if is_short:
+        # Short: entry at current price, stop above, target below
+        entry_price = candidate.current_price
+        stop_price = candidate.scanner_stop or (entry_price * 1.05)  # 5% above for shorts
+        target_price = candidate.scanner_target_1 or (entry_price * 0.94)  # 6% below
+    else:
+        # Long: entry at buy zone midpoint
+        entry_price = (candidate.scanner_buy_low + candidate.scanner_buy_high) / 2 if candidate.scanner_buy_low else candidate.current_price
+        stop_price = candidate.scanner_stop or (entry_price * 0.97)
+        target_price = candidate.scanner_target_1 or (entry_price * 1.06)
 
     return {
         "ticker": candidate.ticker,
-        "action": candidate.action if candidate.action in ("BUY", "SELL") else "BUY",
+        "action": trade_action,
         "order_type": "LMT",
         "limit_price": round(entry_price, 2),
         "stop_loss": round(stop_price, 2),
         "target": round(target_price, 2),
         "source": "pipeline-auto",
-        "position_size_pct": candidate.scanner_position_pct or 0.02,
+        "position_size_pct": candidate.scanner_position_pct or (0.015 if is_short else 0.02),
+        "side": "SHORT" if is_short else "LONG",
     }
 
 
@@ -679,13 +751,21 @@ def format_portfolio_suggestions(positions: List[Dict], candidates: List[SignalC
 
     # Suggest new positions from candidates not currently held
     held_symbols = {p.get('symbol') for p in positions}
-    new_ideas = [c for c in candidates if c.action == "BUY" and c.ticker not in held_symbols][:3]
-    if new_ideas:
-        lines.append("\n*New Ideas (not held):*")
-        for c in new_ideas:
+    new_longs = [c for c in candidates if c.action == "BUY" and c.ticker not in held_symbols][:3]
+    new_shorts = [c for c in candidates if c.action == "SHORT" and c.ticker not in held_symbols][:2]
+    if new_longs:
+        lines.append("\n*New Long Ideas (not held):*")
+        for c in new_longs:
             lines.append(
                 f"🆕 *${c.ticker}* — Score {c.conviction_score:.1f}/10, "
                 f"Buy ${c.scanner_buy_low:.2f}-${c.scanner_buy_high:.2f}"
+            )
+    if new_shorts:
+        lines.append("\n*New Short Ideas (not held):*")
+        for c in new_shorts:
+            lines.append(
+                f"🟣 *${c.ticker}* — SHORT Score {c.conviction_score:.1f}/10, "
+                f"Target ${c.scanner_target_1:.2f}, Stop ${c.scanner_stop:.2f}"
             )
 
     # Options suggestions for large positions
@@ -849,9 +929,15 @@ async def run_full_pipeline(
         try:
             prompt = format_llm_digest_prompt(candidates)
             response = llm_fn(prompt, 2000, {}, "PIPELINE", [])
-            content = response.get("raw_response") or response.get("raw_llm") or ""
+            try:
+                try:
+                    from .llm_shared import extract_llm_text
+                except ImportError:
+                    from llm_shared import extract_llm_text
+                content = extract_llm_text(response, max_chars=1900)
+            except Exception:
+                content = response.get("raw_response") or response.get("raw_llm") or ""
             if content:
-                content = content.replace("```", "").replace("**", "*")
                 digest_messages = [content[:1900]]
             else:
                 digest_messages = format_nightly_digest(candidates)

@@ -7,6 +7,9 @@ First run triggers browser consent flow and saves token cache for reuse.
 from __future__ import annotations
 
 import base64
+import logging
+
+logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
 from pathlib import Path
@@ -119,16 +122,21 @@ def build_gmail_service(
     token_file = Path(token_path)
     creds = None
     if token_file.exists():
+        logger.debug("Loading cached OAuth token from %s", token_file)
         creds = Credentials.from_authorized_user_file(str(token_file), scopes)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
+            logger.info("Refreshing expired OAuth token")
             creds.refresh(Request())
         else:
+            logger.info("Starting OAuth consent flow (browser will open)")
             flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), scopes)
             creds = flow.run_local_server(port=0)
         token_file.write_text(creds.to_json(), encoding="utf-8")
+        logger.debug("Saved OAuth token to %s", token_file)
 
+    logger.info("Gmail API service built successfully")
     return build("gmail", "v1", credentials=creds)
 
 
@@ -153,6 +161,12 @@ def fetch_gmail_emails_from_sender(
         query_parts.append(f"newer_than:{newer_than_days}d")
     query = " ".join(query_parts).strip()
 
+    logger.info(
+        "Fetching Gmail messages: sender=%s limit=%d unseen_only=%s newer_than_days=%s",
+        sender_email, limit, unseen_only, newer_than_days,
+    )
+    logger.debug("Gmail query: %s", query)
+
     listed = (
         service.users()
         .messages()
@@ -160,6 +174,7 @@ def fetch_gmail_emails_from_sender(
         .execute()
     )
     message_refs = listed.get("messages") or []
+    logger.info("Gmail list returned %d message(s)", len(message_refs))
     docs: List[EmailDocument] = []
 
     for ref in message_refs:
@@ -192,6 +207,11 @@ def fetch_gmail_emails_from_sender(
                 sent_at = None
         body_text = _extract_body_from_payload(payload)
 
+        logger.debug(
+            "Fetched email: gmail_id=%s subject=%r sent_at=%s body_len=%d",
+            msg_id, subject[:60] + "..." if len(subject) > 60 else subject,
+            sent_at, len(body_text),
+        )
         docs.append(
             EmailDocument(
                 uid=str(raw_msg.get("threadId") or msg_id),
@@ -207,5 +227,7 @@ def fetch_gmail_emails_from_sender(
 
     # Gmail list returns newest first in practice; keep explicit sort safety.
     docs.sort(key=lambda x: x.sent_at or (datetime.now(timezone.utc) - timedelta(days=36500)), reverse=True)
-    return docs[:limit]
+    result = docs[:limit]
+    logger.info("Returning %d email(s) from Gmail fetch", len(result))
+    return result
 

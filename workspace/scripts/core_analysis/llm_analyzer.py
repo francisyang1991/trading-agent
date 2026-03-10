@@ -12,6 +12,7 @@ Features:
 import os
 import json
 import requests
+import pandas as pd
 import yfinance as yf
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
@@ -57,6 +58,17 @@ def get_stock_context(ticker: str) -> Dict:
         for days_ago in [5, 10, 30]:
             if len(hist) > days_ago:
                 prices[f'{days_ago}d_ago'] = float(hist['Close'].iloc[-days_ago-1])
+
+        # ATR (14-period) for exit-target alignment with trading_agent scanner
+        atr_value = None
+        if all(c in hist.columns for c in ('High', 'Low', 'Close')) and len(hist) >= 15:
+            tr1 = hist['High'] - hist['Low']
+            tr2 = abs(hist['High'] - hist['Close'].shift())
+            tr3 = abs(hist['Low'] - hist['Close'].shift())
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr_series = tr.rolling(window=14).mean()
+            if not atr_series.empty and not pd.isna(atr_series.iloc[-1]):
+                atr_value = round(float(atr_series.iloc[-1]), 2)
         
         result = {
             "current_price": round(current_price, 2),
@@ -72,6 +84,8 @@ def get_stock_context(ticker: str) -> Dict:
         }
         if rsi_value is not None:
             result["rsi"] = rsi_value
+        if atr_value is not None:
+            result["atr"] = atr_value
         return result
     except Exception as e:
         return {"error": str(e)}

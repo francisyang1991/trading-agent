@@ -39,6 +39,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings('ignore')
 
+from src.indicators.vwap import calculate_rolling_vwap, calculate_vwap_slope
+from src.indicators.volume import rolling_volume_profile_levels
+
 
 # ============================================================================
 # HELPERS
@@ -198,6 +201,56 @@ def strategy_adaptive(df: pd.DataFrame) -> pd.Series:
     return signals
 
 
+def strategy_vwap_pullback(df: pd.DataFrame) -> pd.Series:
+    """
+    Daily proxy of the VWAP trend + pullback strategy.
+    This keeps the strategy available in the unified backtester.
+    """
+    data = df.copy()
+    data.columns = [c.lower() for c in data.columns]
+    data["atr14"] = calculate_atr(data["high"], data["low"], data["close"], 14)
+    data["vwap20d"] = calculate_rolling_vwap(
+        data["high"], data["low"], data["close"], data["volume"], window=20
+    )
+    data["vwap_slope"] = calculate_vwap_slope(data["vwap20d"], slope_lookback=5)
+    vp = rolling_volume_profile_levels(data[["low", "high", "close", "volume"]], window=5, bins=24)
+    data["poc_5d"] = vp["poc"]
+    data["vah_5d"] = vp["vah"]
+    data["above_count_20"] = (data["close"] > data["vwap20d"]).rolling(20, min_periods=20).sum()
+    data["long_watch"] = (
+        (data["close"] > data["vwap20d"])
+        & (data["above_count_20"] >= 13)
+        & (data["poc_5d"] > data["poc_5d"].shift(5))
+        & (data["vwap_slope"] > 0)
+        & (((data["close"] - data["vwap20d"]) / data["atr14"]) < 1.0)
+    )
+
+    signals = pd.Series(0, index=df.index)
+    pending = False
+    for i in range(2, len(data)):
+        row = data.iloc[i]
+        prev = data.iloc[i - 1]
+        if not row["long_watch"] or not np.isfinite(row["atr14"]):
+            pending = False
+            continue
+
+        tol = 0.25 * row["atr14"]
+        line = row["vwap20d"] if abs(row["close"] - row["vwap20d"]) < abs(row["close"] - row["vah_5d"]) else row["vah_5d"]
+        touch = row["low"] <= line + tol and row["high"] >= line - tol
+        reject = touch and row["close"] > line
+        if reject:
+            pending = True
+            continue
+
+        if pending and row["high"] > prev["high"] and row["close"] > line:
+            signals.iloc[i] = 1
+            pending = False
+        elif row["close"] < line:
+            signals.iloc[i] = -1
+
+    return signals
+
+
 STRATEGIES = {
     'bnh': ('Buy & Hold', strategy_buy_hold),
     'ema': ('EMA Crossover', strategy_ema_cross),
@@ -206,6 +259,7 @@ STRATEGIES = {
     'momentum': ('Momentum Breakout', strategy_momentum),
     'swing': ('Swing Trade', strategy_swing),
     'adaptive': ('Adaptive', strategy_adaptive),
+    'vwap_pullback': ('VWAP Pullback', strategy_vwap_pullback),
 }
 
 

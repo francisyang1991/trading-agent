@@ -135,6 +135,40 @@ services:
     command: python /app/workspace/scripts/discord_bot/interactive_bot.py
 
   # =============================================================================
+  # Saiyan Dashboard - Next.js Decision Engine UI
+  # =============================================================================
+  # Connects to trading-agent via Docker internal network.
+  # Access via IAP tunnel: gcloud compute ssh trading-vm -- -L 3000:localhost:3000
+  # Usage: docker compose --profile dashboard up -d saiyan-dashboard
+  saiyan-dashboard:
+    build:
+      context: ../saiyan-dashboard
+      dockerfile: Dockerfile
+    container_name: saiyan-dashboard
+    profiles:
+      - dashboard
+      - full
+    environment:
+      - GCP_GATEWAY_URL=http://trading-agent:8080
+      - GCP_GATEWAY_API_KEY=${GCP_GATEWAY_API_KEY:-saiyan-trade-2026}
+      - PAPER_TRADING_API_URL=http://trading-agent:8080
+      - NODE_ENV=production
+    ports:
+      - "3000:3000"
+    volumes:
+      - ${DASHBOARD_DATA_DIR:-../saiyan-dashboard/data}:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      trading-agent:
+        condition: service_healthy
+
+  # =============================================================================
   # Trading Agent - Standalone GUI (connects to local IB Gateway)
   # =============================================================================
   trading-gui:

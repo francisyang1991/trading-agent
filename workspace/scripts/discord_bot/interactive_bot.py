@@ -5,6 +5,12 @@ Interactive Discord Trading Bot
 Thin Discord event handler. All heavy logic lives in:
   - trade_parser.py   → command parsing
   - trade_executor.py → entry computation, API calls, reporting
+  - message_routing.py → mention-intent routing
+  - signal_message_utils.py → cached-signal parsing/collection
+  - daily_signal_analysis.py → daily LLM prompt/report assembly
+  - llm_shared.py → shared LLM adapter + stock context
+  - scheduler_runtime.py → reusable scheduler loops
+  - bot_shared.py → shared send/error helpers
 
 Architecture:
   AWS (this bot)  ─── HTTP POST ───►  GCP (Trading GUI :8080/api/trade)
@@ -29,8 +35,8 @@ Commands:
 
 import os
 import sys
-import re
 import json
+import socket
 from pathlib import Path
 import asyncio
 import logging
@@ -38,10 +44,6 @@ import discord
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-
-# Core analysis (LLM + yfinance)
-sys.path.append(os.path.join(os.path.dirname(__file__), '../core_analysis'))
-from llm_analyzer import _call_minimax_anthropic, get_stock_context
 
 # Trading agent root (for email analysis)
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +59,12 @@ import signal_tracker
 import pattern_library
 import auto_executor
 import portfolio_manager
+import message_routing
+import daily_signal_analysis
+from bot_shared import safe_send as _safe_send, notify_job_exception
+from llm_shared import call_llm_raw, get_stock_context, extract_llm_text
+from scheduler_runtime import DailySchedulerJob, run_daily_scheduler, run_interval_scheduler
+from signal_message_utils import extract_ticker, get_ticker_messages, collect_recent_messages
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -67,6 +75,8 @@ log = logging.getLogger("interactive-bot")
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+_BOT_INSTANCE_ID = os.environ.get("BOT_INSTANCE_ID") or socket.gethostname()
+
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_USER_TOKEN = os.environ.get("DISCORD_USER_TOKEN", "")
 DATA_FILE = os.path.join(os.path.dirname(__file__), '../../data/real_discord_messages_goku_wilson_60d.txt')
@@ -92,6 +102,10 @@ PIPELINE_TIMEOUT_SECONDS = int(os.environ.get("PIPELINE_TIMEOUT_SECONDS", "1200"
 CITRINI_EMAIL_ENABLED = os.environ.get("CITRINI_EMAIL_ENABLED", "false").lower() in ("1", "true", "yes")
 CITRINI_EMAIL_INTERVAL_MIN = int(os.environ.get("CITRINI_EMAIL_INTERVAL_MIN", "60"))
 
+# Signal cache: refresh every 6h, append-only; keep last Y days
+SIGNAL_REFRESH_INTERVAL_SEC = int(os.environ.get("SIGNAL_REFRESH_INTERVAL_SEC", "21600"))  # 6 hours
+SIGNAL_CACHE_DAYS = int(os.environ.get("SIGNAL_CACHE_DAYS", "60"))
+
 # ---------------------------------------------------------------------------
 # Bot setup
 # ---------------------------------------------------------------------------
@@ -101,69 +115,8 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 _tasks_started = False
 
-
-# ===================================================================
-# Analysis helpers
-# ===================================================================
-
-def extract_ticker(text):
-    """Extract stock ticker from message text."""
-    exclude = {
-        'THE', 'AND', 'FOR', 'ARE', 'BUT', 'NOT', 'YOU', 'ALL', 'CAN',
-        'HAS', 'HIS', 'HOW', 'ITS', 'MAY', 'NEW', 'NOW', 'OLD', 'SEE',
-        'WAY', 'WHO', 'BOT', 'GET', 'LET', 'PUT', 'SAY', 'USE', 'YES',
-        'BUY', 'SELL', 'HOLD', 'LONG', 'SHORT', 'WHAT', 'WHEN', 'THIS',
-        'THAT', 'WITH', 'FROM', 'HAVE', 'WILL', 'YOUR', 'ABOUT', 'THINK',
-        'INTO', 'SCALE', 'DCA', 'ADD', 'USD', 'SHARES',
-    }
-    for pattern in [r'\$([A-Z]{1,5})\b', r'\b([A-Z]{1,5})\b']:
-        for match in re.findall(pattern, text.upper()):
-            if match not in exclude and len(match) >= 2:
-                return match
-    return None
-
-
-def get_ticker_messages(ticker, days=60):
-    """Get cached messages mentioning a ticker.
-
-    Uses regex word-boundary matching to avoid partial ticker matches.
-    e.g., searching for $AA will NOT match $AAPL, $AAL, or random text
-    containing the letters 'AA' inside other words.
-    """
-    if not os.path.exists(DATA_FILE):
-        return [], None  # No data file is not an error — scanner will provide analysis
-    with open(DATA_FILE, 'r') as f:
-        data = json.load(f)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-
-    # Build regex patterns with word boundaries for exact ticker matching
-    ticker_upper = ticker.upper()
-    ticker_patterns = [
-        # $AA followed by non-letter (or end of string) — matches "$AA " but NOT "$AAPL"
-        re.compile(r'\$' + re.escape(ticker_upper) + r'(?![A-Za-z])'),
-        # Standalone AA: not preceded by letter/$ and not followed by letter
-        re.compile(r'(?<![A-Za-z$])' + re.escape(ticker_upper) + r'(?![A-Za-z])'),
-    ]
-
-    messages = []
-    for channel_id, msgs in data.items():
-        source = "Goku" if channel_id in GOKU_CHANNELS else "Wilson"
-        for msg in msgs:
-            content = msg.get('content', '')
-            ts = msg.get('timestamp', '')
-            if any(p.search(content) for p in ticker_patterns):
-                try:
-                    dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                    if dt > cutoff:
-                        messages.append({
-                            "source": source, "date": ts[:10],
-                            "content": content,
-                            "author": msg.get('author', {}).get('username', 'Unknown'),
-                        })
-                except Exception:
-                    continue
-    messages.sort(key=lambda x: x['date'], reverse=True)
-    return messages, None
+# Guard: prevent duplicate !daily processing (e.g. double-send or two bots)
+_daily_in_progress: set = set()
 
 
 # ===================================================================
@@ -303,7 +256,7 @@ def generate_stock_analysis(ticker, messages):
     """
     Generate LLM analysis from cached Discord signals.
 
-    FIX: Handles all response types from _call_minimax_anthropic:
+    FIX: Handles all response types from shared LLM adapter:
     - raw_response (unparsed LLM text)
     - raw_llm (LLM text stored by local analysis fallback)
     - Parsed JSON (sentiment, thesis, etc.) → format into readable text
@@ -344,22 +297,16 @@ Provide Discord-formatted analysis (<1800 chars):
 🛑 *EXIT* - Stop, targets, horizon
 ⚖️ *RISK/REWARD* - R:R, confidence, key risk
 
-Use single asterisks for bold."""
+    Use single asterisks for bold."""
 
     try:
-        response = _call_minimax_anthropic(prompt, 2000, stock_ctx, ticker, messages)
+        response = call_llm_raw(prompt, 2000, stock_ctx, ticker, messages)
     except Exception as e:
         log.warning(f"LLM analysis failed for {ticker}: {e}")
         return ""
 
-    # Extract content from response — handle ALL possible formats
-    content = ""
-
-    # 1. Raw LLM text (unparsed or from local fallback)
-    if response.get("raw_response"):
-        content = response["raw_response"]
-    elif response.get("raw_llm"):
-        content = response["raw_llm"]
+    # Extract content from response — handle raw text first
+    content = extract_llm_text(response, max_chars=None)
 
     # 2. Parsed JSON → format into readable text
     if not content and response.get("sentiment"):
@@ -387,7 +334,7 @@ Use single asterisks for bold."""
 
     # 3. Final cleanup
     if content:
-        content = content.replace("```", "").replace("**", "*")
+        content = content.replace("**", "*")
         return content[:1900] + "..." if len(content) > 1900 else content
 
     return ""  # Caller will fall through to scanner
@@ -429,19 +376,15 @@ Provide Discord-formatted analysis (<1800 chars):
 🛑 *RISK* - Stop loss level, key risks
 ⚖️ *OUTLOOK* - Short-term vs medium-term view
 
-Be specific with price levels. Use single asterisks for bold."""
+    Be specific with price levels. Use single asterisks for bold."""
 
     try:
-        response = _call_minimax_anthropic(prompt, 2000, stock_ctx, ticker, [])
+        response = call_llm_raw(prompt, 2000, stock_ctx, ticker, [])
     except Exception as e:
         log.warning(f"Standalone LLM analysis failed for {ticker}: {e}")
         return ""
 
-    content = ""
-    if response.get("raw_response"):
-        content = response["raw_response"]
-    elif response.get("raw_llm"):
-        content = response["raw_llm"]
+    content = extract_llm_text(response, max_chars=None)
 
     if not content and response.get("sentiment"):
         parts = [f"*${ticker} Technical Analysis*"]
@@ -468,21 +411,10 @@ Be specific with price levels. Use single asterisks for bold."""
         content = "\n".join(parts)
 
     if content:
-        content = content.replace("```", "").replace("**", "*")
+        content = content.replace("**", "*")
         return content[:1900] + "..." if len(content) > 1900 else content
 
     return ""
-
-
-async def _safe_send(channel, text):
-    """Send a message to Discord, guarding against empty content."""
-    if not text or not text.strip():
-        log.warning("Attempted to send empty message — skipped")
-        return
-    # Discord limit is 2000 chars
-    if len(text) > 2000:
-        text = text[:1997] + "..."
-    await channel.send(text)
 
 
 def _now_local():
@@ -524,6 +456,17 @@ async def _get_digest_channel():
     except Exception as e:
         log.error(f"Cannot resolve digest channel {DIGEST_CHANNEL_ID}: {e}")
         return None
+
+
+async def _notify_scheduler_error(job_label: str, error: Exception):
+    """Unified scheduler error reporting to logs + Discord."""
+    await notify_job_exception(
+        job_label=job_label,
+        error=error,
+        resolve_channel_fn=_get_digest_channel,
+        send_fn=lambda channel, text: _safe_send(channel, text, logger=log),
+        logger=log,
+    )
 
 
 async def _send_daily_portfolio_status(channel, label: str = "Daily Portfolio Status"):
@@ -580,7 +523,7 @@ async def run_full_analysis(channel, ticker):
       5. Combine and send results
     """
     # Step 1: Cached signals
-    msgs, err = get_ticker_messages(ticker)
+    msgs, err = get_ticker_messages(DATA_FILE, ticker, GOKU_CHANNELS)
 
     # Step 2: LLM analysis from cached signals (if any)
     llm_text = ""
@@ -672,9 +615,9 @@ async def on_ready():
 
     _tasks_started = True
     asyncio.create_task(_check_server())
-    # Backfill recent signals from Goku/Wilson channels on startup
-    asyncio.create_task(_scrape_recent_signals())
-    # Start periodic signal refresh (every 30 min during market hours)
+    # Initial signal refresh (append-only; bootstraps empty channels)
+    asyncio.create_task(_append_new_signals_only())
+    # Periodic signal refresh (every 6h, append-only)
     asyncio.create_task(_periodic_signal_refresh())
     # Start morning pipeline scheduler (7:00 AM PT)
     asyncio.create_task(_morning_pipeline_scheduler())
@@ -788,22 +731,32 @@ def _save_signal_to_cache(message):
         log.warning(f"Failed to save signal: {e}")
 
 
-async def _scrape_recent_signals():
+def _normalize_msg(msg):
+    """Ensure message has id, content, timestamp, author for cache compatibility."""
+    return {
+        "id": msg.get("id"),
+        "content": msg.get("content", ""),
+        "timestamp": msg.get("timestamp", ""),
+        "author": msg.get("author", {}),
+    }
+
+
+async def _append_new_signals_only():
     """
-    On startup, scrape recent messages from Goku/Wilson channels
-    using the Discord user token (HTTP API) to backfill any gaps.
-    Runs once on bot start, then the live collector keeps data fresh.
+    Append-only refresh: fetch only messages after the last known ID per channel.
+    Trims cache to last SIGNAL_CACHE_DAYS. Runs every 6h to keep data fresh.
     """
     if not DISCORD_USER_TOKEN:
-        log.warning("DISCORD_USER_TOKEN not set — skipping signal backfill")
+        log.warning("DISCORD_USER_TOKEN not set — skipping signal refresh")
         return
 
     import aiohttp
     headers = {"authorization": DISCORD_USER_TOKEN}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=SIGNAL_CACHE_DAYS)
 
     try:
         if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, 'r') as f:
+            with open(DATA_FILE, "r") as f:
                 data = json.load(f)
         else:
             data = {}
@@ -814,63 +767,103 @@ async def _scrape_recent_signals():
     async with aiohttp.ClientSession() as session:
         for channel_id in ALL_SIGNAL_CHANNELS:
             existing = data.get(channel_id, [])
-            existing_ids = {m.get('id') for m in existing}
+            existing_ids = {m.get("id") for m in existing}
 
-            # Fetch last 100 messages (covers ~2-3 days typically)
-            url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=100"
-            try:
-                async with session.get(url, headers=headers) as resp:
-                    if resp.status == 200:
-                        messages = await resp.json()
-                        for msg in messages:
-                            if msg['id'] not in existing_ids:
-                                existing.append(msg)
-                                total_new += 1
-                        data[channel_id] = existing
-                        log.info(f"Backfill channel {channel_id}: {len(messages)} fetched, {total_new} new so far")
-                    elif resp.status == 401:
-                        log.warning(f"DISCORD_USER_TOKEN invalid (401) — cannot backfill signals")
-                        return
-                    else:
-                        log.warning(f"Backfill channel {channel_id}: HTTP {resp.status}")
-                await asyncio.sleep(1)  # Rate limit respect
-            except Exception as e:
-                log.warning(f"Backfill error for {channel_id}: {e}")
+            valid_ids = [m.get("id") for m in existing if m.get("id")]
+            if existing and valid_ids:
+                # Append-only: fetch messages after max ID
+                max_id = max(valid_ids, key=lambda x: int(x))
+                current_after = max_id
+                while True:
+                    url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=50&after={current_after}"
+                    try:
+                        async with session.get(url, headers=headers) as resp:
+                            if resp.status == 200:
+                                messages = await resp.json()
+                            elif resp.status == 401:
+                                log.warning("DISCORD_USER_TOKEN invalid (401) — cannot refresh signals")
+                                break
+                            else:
+                                log.warning(f"Signal refresh channel {channel_id}: HTTP {resp.status}")
+                                break
+                    except Exception as e:
+                        log.warning(f"Signal refresh error for {channel_id}: {e}")
+                        break
 
-    if total_new > 0:
-        try:
-            with open(DATA_FILE, 'w') as f:
-                json.dump(data, f, indent=2)
-            log.info(f"Signal backfill complete: {total_new} new messages saved")
-        except Exception as e:
-            log.warning(f"Failed to save backfill data: {e}")
-    else:
-        log.info("Signal backfill: data already up to date")
+                    if not messages:
+                        break
+                    for msg in messages:
+                        mid = msg.get("id")
+                        if mid and mid not in existing_ids:
+                            existing.append(_normalize_msg(msg))
+                            existing_ids.add(mid)
+                            total_new += 1
+                    current_after = messages[-1]["id"]
+                    if len(messages) < 50:
+                        break
+                    await asyncio.sleep(1)
+            else:
+                # Bootstrap: fetch last 100 for empty channel
+                url = f"https://discord.com/api/v9/channels/{channel_id}/messages?limit=100"
+                try:
+                    async with session.get(url, headers=headers) as resp:
+                        if resp.status == 200:
+                            messages = await resp.json()
+                            for msg in messages:
+                                mid = msg.get("id")
+                                if mid and mid not in existing_ids:
+                                    existing.append(_normalize_msg(msg))
+                                    existing_ids.add(mid)
+                                    total_new += 1
+                        elif resp.status == 401:
+                            log.warning("DISCORD_USER_TOKEN invalid (401) — cannot bootstrap signals")
+                            break
+                except Exception as e:
+                    log.warning(f"Signal bootstrap error for {channel_id}: {e}")
+                await asyncio.sleep(1)
+
+            # Trim to last Y days
+            trimmed = []
+            for m in existing:
+                ts = m.get("timestamp", "")
+                try:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if dt > cutoff:
+                        trimmed.append(m)
+                except Exception:
+                    trimmed.append(m)
+            data[channel_id] = trimmed
+
+    try:
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+        if total_new > 0:
+            log.info(f"Signal refresh: {total_new} new messages appended, cache trimmed to {SIGNAL_CACHE_DAYS}d")
+        else:
+            log.info("Signal refresh: no new messages, cache trimmed")
+    except Exception as e:
+        log.warning(f"Failed to save signal cache: {e}")
 
 
 async def _periodic_signal_refresh():
     """
-    Periodically refresh signal data from Goku/Wilson channels.
-    Runs every 30 minutes during market-session Pacific hours.
+    Append-only signal refresh every 6 hours. Fetches only new messages
+    after last known ID per channel; trims cache to last Y days.
     """
-    await asyncio.sleep(60)  # Wait 1 min after startup (backfill runs first)
+    async def _tick():
+        log.info("Periodic signal refresh (append-only)")
+        await _append_new_signals_only()
+        return SIGNAL_REFRESH_INTERVAL_SEC
 
-    while True:
-        try:
-            local_now = _now_local()
-            is_weekday = local_now.weekday() < 5
-            # Rough PT window for pre/open/close workflow.
-            in_refresh_window = 6 <= local_now.hour <= 17
-
-            if is_weekday and in_refresh_window:
-                log.info("Periodic signal refresh triggered")
-                await _scrape_recent_signals()
-                await asyncio.sleep(1800)  # 30 minutes
-            else:
-                await asyncio.sleep(900)  # Check again in 15 min
-        except Exception as e:
-            log.warning(f"Periodic refresh error: {e}")
-            await asyncio.sleep(300)  # Retry in 5 min on error
+    await run_interval_scheduler(
+        name="Periodic Signal Refresh",
+        startup_delay_sec=60,
+        tick_fn=_tick,
+        default_interval_sec=SIGNAL_REFRESH_INTERVAL_SEC,
+        error_interval_sec=300,
+        on_error_fn=lambda e: _notify_scheduler_error("Periodic signal refresh", e),
+        logger=log,
+    )
 
 
 # Target channel for nightly digest (Rich or Die)
@@ -881,201 +874,185 @@ async def _morning_pipeline_scheduler():
     """
     Run morning signal pipeline at 7:00 AM Pacific to queue pre-market ideas.
     """
-    await asyncio.sleep(90)
-    last_run_date = ""
-
-    while True:
+    async def _run(_local_now):
+        channel = await _get_digest_channel()
+        if channel is None:
+            log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
+            return
         try:
-            should_run, run_date, local_now = _is_due_today(last_run_date, *MORNING_PIPELINE_TIME)
-            if should_run:
-                last_run_date = run_date
-                log.info(f"Morning pipeline triggered ({local_now.strftime('%Y-%m-%d %H:%M %Z')})")
-                channel = await _get_digest_channel()
-                if channel:
-                    try:
-                        await asyncio.wait_for(
-                            _run_and_send_pipeline(channel=channel, run_label="Morning Pipeline"),
-                            timeout=PIPELINE_TIMEOUT_SECONDS,
-                        )
-                    except asyncio.TimeoutError:
-                        mins = max(1, PIPELINE_TIMEOUT_SECONDS // 60)
-                        await _safe_send(channel, f"⚠️ Morning Pipeline timed out after {mins} minutes.")
-                        log.error("Morning pipeline timed out")
-                        await _send_discord_only_digest(channel, "Morning Pipeline", days=3, reason="scanner timeout")
-                else:
-                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
-            await asyncio.sleep(60)
-        except Exception as e:
-            log.exception(f"Morning pipeline scheduler error: {e}")
-            try:
-                ch = await _get_digest_channel()
-                if ch:
-                    await _safe_send(ch, f"⚠️ Morning Pipeline error: {str(e)[:200]}")
-            except Exception:
-                pass
-            await asyncio.sleep(60)
+            await asyncio.wait_for(
+                _run_and_send_pipeline(channel=channel, run_label="Morning Pipeline"),
+                timeout=PIPELINE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            mins = max(1, PIPELINE_TIMEOUT_SECONDS // 60)
+            await _safe_send(channel, f"⚠️ Morning Pipeline timed out after {mins} minutes.")
+            log.error("Morning pipeline timed out")
+            await _send_discord_only_digest(channel, "Morning Pipeline", days=3, reason="scanner timeout")
+
+    await run_daily_scheduler(
+        config=DailySchedulerJob(
+            name="Morning Pipeline",
+            hour=MORNING_PIPELINE_TIME[0],
+            minute=MORNING_PIPELINE_TIME[1],
+            startup_delay_sec=90,
+        ),
+        is_due_today_fn=_is_due_today,
+        run_job_fn=_run,
+        on_error_fn=lambda e: _notify_scheduler_error("Morning Pipeline", e),
+        logger=log,
+    )
 
 
 async def _nightly_pipeline_scheduler():
     """
     Run full pipeline daily at 3:15 PM Pacific and send portfolio status after review.
     """
-    await asyncio.sleep(120)  # Wait 2 min after startup
-    last_run_date = ""
-
-    while True:
+    async def _run(_local_now):
+        channel = await _get_digest_channel()
+        if channel is None:
+            log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
+            return
         try:
-            should_run, run_date, local_now = _is_due_today(last_run_date, *NIGHTLY_REVIEW_TIME)
-            if should_run:
-                last_run_date = run_date
-                log.info(f"Nightly market review triggered ({local_now.strftime('%Y-%m-%d %H:%M %Z')})")
-                channel = await _get_digest_channel()
-                if channel:
-                    try:
-                        await asyncio.wait_for(
-                            _run_and_send_pipeline(
-                                channel=channel,
-                                run_label="Nightly Market Review",
-                                send_portfolio_status=True,
-                            ),
-                            timeout=PIPELINE_TIMEOUT_SECONDS,
-                        )
-                    except asyncio.TimeoutError:
-                        mins = max(1, PIPELINE_TIMEOUT_SECONDS // 60)
-                        await _safe_send(channel, f"⚠️ Nightly Market Review timed out after {mins} minutes.")
-                        log.error("Nightly pipeline timed out")
-                        await _send_discord_only_digest(channel, "Nightly Market Review", days=3, reason="scanner timeout")
-                else:
-                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
-            await asyncio.sleep(60)
-        except Exception as e:
-            log.exception(f"Nightly pipeline scheduler error: {e}")
-            try:
-                ch = await _get_digest_channel()
-                if ch:
-                    await _safe_send(ch, f"⚠️ Nightly Market Review error: {str(e)[:200]}")
-            except Exception:
-                pass
-            await asyncio.sleep(60)
+            await asyncio.wait_for(
+                _run_and_send_pipeline(
+                    channel=channel,
+                    run_label="Nightly Market Review",
+                    send_portfolio_status=True,
+                ),
+                timeout=PIPELINE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            mins = max(1, PIPELINE_TIMEOUT_SECONDS // 60)
+            await _safe_send(channel, f"⚠️ Nightly Market Review timed out after {mins} minutes.")
+            log.error("Nightly pipeline timed out")
+            await _send_discord_only_digest(channel, "Nightly Market Review", days=3, reason="scanner timeout")
+
+    await run_daily_scheduler(
+        config=DailySchedulerJob(
+            name="Nightly Market Review",
+            hour=NIGHTLY_REVIEW_TIME[0],
+            minute=NIGHTLY_REVIEW_TIME[1],
+            startup_delay_sec=120,
+        ),
+        is_due_today_fn=_is_due_today,
+        run_job_fn=_run,
+        on_error_fn=lambda e: _notify_scheduler_error("Nightly Market Review", e),
+        logger=log,
+    )
 
 
 async def _auto_execute_scheduler():
     """
     Run auto-execution of approved trades at market open (6:35 AM Pacific / 9:35 AM ET).
     """
-    await asyncio.sleep(130)
-    last_run_date = ""
+    async def _run(local_now):
+        channel = await _get_digest_channel()
+        send_fn = channel.send if channel else None
+        if channel is None:
+            log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}; executing without Discord updates")
+        else:
+            await _safe_send(channel, f"⏰ *Auto-Execution Check* — {local_now.strftime('%H:%M %Z')}")
+        await auto_executor.execute_approved_trades(send_fn)
 
-    while True:
-        try:
-            should_run, run_date, local_now = _is_due_today(last_run_date, *AUTO_EXECUTION_TIME)
-            if should_run:
-                last_run_date = run_date
-                log.info(f"Auto-execution triggered ({local_now.strftime('%Y-%m-%d %H:%M %Z')})")
-                channel = await _get_digest_channel()
-                send_fn = channel.send if channel else None
-                if channel is None:
-                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}; executing without Discord updates")
-                else:
-                    await _safe_send(channel, f"⏰ *Auto-Execution Check* — {local_now.strftime('%H:%M %Z')}")
-                await auto_executor.execute_approved_trades(send_fn)
-            await asyncio.sleep(60)
-        except Exception as e:
-            log.exception(f"Auto-execute scheduler error: {e}")
-            try:
-                ch = await _get_digest_channel()
-                if ch:
-                    await _safe_send(ch, f"⚠️ Auto-execute error: {str(e)[:200]}")
-            except Exception:
-                pass
-            await asyncio.sleep(60)
+    await run_daily_scheduler(
+        config=DailySchedulerJob(
+            name="Auto-Execution",
+            hour=AUTO_EXECUTION_TIME[0],
+            minute=AUTO_EXECUTION_TIME[1],
+            startup_delay_sec=130,
+        ),
+        is_due_today_fn=_is_due_today,
+        run_job_fn=_run,
+        on_error_fn=lambda e: _notify_scheduler_error("Auto-execute", e),
+        logger=log,
+    )
 
 
 async def _midday_check_scheduler():
     """
     Run portfolio check at noon Pacific.
     """
-    await asyncio.sleep(140)
-    last_run_date = ""
-
-    while True:
+    async def _run(_local_now):
+        channel = await _get_digest_channel()
+        if channel is None:
+            log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
+            return
         try:
-            should_run, run_date, local_now = _is_due_today(last_run_date, *MIDDAY_REVIEW_TIME)
-            if should_run:
-                last_run_date = run_date
-                log.info(f"Midday portfolio review triggered ({local_now.strftime('%Y-%m-%d %H:%M %Z')})")
-                channel = await _get_digest_channel()
-                if channel:
-                    try:
-                        await asyncio.wait_for(
-                            portfolio_manager.run_midday_check(channel.send),
-                            timeout=120,  # 2 minute hard cap
-                        )
-                    except asyncio.TimeoutError:
-                        await _safe_send(channel, "⚠️ Mid-day portfolio check timed out after 2 minutes.")
-                        log.error("Midday check timed out")
-                else:
-                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID}")
-            await asyncio.sleep(60)
-        except Exception as e:
-            log.exception(f"Mid-day check scheduler error: {e}")
-            try:
-                ch = await _get_digest_channel()
-                if ch:
-                    await _safe_send(ch, f"⚠️ Mid-day check error: {str(e)[:200]}")
-            except Exception:
-                pass
-            await asyncio.sleep(60)
+            await asyncio.wait_for(
+                portfolio_manager.run_midday_check(channel.send),
+                timeout=120,
+            )
+        except asyncio.TimeoutError:
+            await _safe_send(channel, "⚠️ Mid-day portfolio check timed out after 2 minutes.")
+            log.error("Midday check timed out")
+
+    await run_daily_scheduler(
+        config=DailySchedulerJob(
+            name="Mid-day Portfolio Check",
+            hour=MIDDAY_REVIEW_TIME[0],
+            minute=MIDDAY_REVIEW_TIME[1],
+            startup_delay_sec=140,
+        ),
+        is_due_today_fn=_is_due_today,
+        run_job_fn=_run,
+        on_error_fn=lambda e: _notify_scheduler_error("Mid-day check", e),
+        logger=log,
+    )
 
 
 async def _citrini_email_scheduler():
     """
     Periodically check for new Citrini emails, run LLM extraction, send trade ideas to Discord.
     """
-    await asyncio.sleep(300)  # Wait 5 min after startup
     interval_sec = max(300, CITRINI_EMAIL_INTERVAL_MIN * 60)
 
-    while True:
+    async def _tick():
+        channel = await _get_digest_channel()
+        if not channel:
+            return interval_sec
+
         try:
-            channel = await _get_digest_channel()
-            if not channel:
-                await asyncio.sleep(interval_sec)
-                continue
+            from src.email_analysis.citrini_discord import run_citrini_email_check
+        except ImportError as e:
+            log.warning(f"Citrini email check skipped (import error): {e}")
+            return interval_sec
 
-            try:
-                from src.email_analysis.citrini_discord import run_citrini_email_check
-            except ImportError as e:
-                log.warning(f"Citrini email check skipped (import error): {e}")
-                await asyncio.sleep(interval_sec)
-                continue
+        root_dir = Path(_TRADING_AGENT_ROOT)
+        client_secret = str(root_dir / "secret" / "client_secret_75860045039-mgs0h9aai4488pokfqgsqlb1doo41eh4.apps.googleusercontent.com.json")
+        token_path = str(root_dir / "token.json")
 
-            root_dir = Path(_TRADING_AGENT_ROOT)
-            client_secret = str(root_dir / "secret" / "client_secret_75860045039-mgs0h9aai4488pokfqgsqlb1doo41eh4.apps.googleusercontent.com.json")
-            token_path = str(root_dir / "token.json")
+        llm_provider = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "zai"
+        messages, err = run_citrini_email_check(
+            client_secret_path=client_secret,
+            token_path=token_path,
+            processed_path="data/email/citrini_processed.json",
+            sender="citrini@substack.com",
+            limit=10,
+            unseen_only=True,
+            llm_provider=llm_provider,
+            root_dir=root_dir,
+        )
 
-            llm_provider = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "zai"
-            messages, err = run_citrini_email_check(
-                client_secret_path=client_secret,
-                token_path=token_path,
-                processed_path="data/email/citrini_processed.json",
-                sender="citrini@substack.com",
-                limit=10,
-                unseen_only=True,
-                llm_provider=llm_provider,
-                root_dir=root_dir,
-            )
+        if err:
+            log.warning(f"Citrini email check failed: {err}")
+        elif messages:
+            await _safe_send(channel, f"📬 *New Citrini Newsletter* — trade ideas extracted:\n")
+            for msg in messages:
+                await _safe_send(channel, msg)
+                await asyncio.sleep(1)
+            log.info(f"Citrini: sent {len(messages)} trade idea message(s) to Discord")
+        return interval_sec
 
-            if err:
-                log.warning(f"Citrini email check failed: {err}")
-            elif messages:
-                await _safe_send(channel, f"📬 *New Citrini Newsletter* — trade ideas extracted:\n")
-                for msg in messages:
-                    await _safe_send(channel, msg)
-                    await asyncio.sleep(1)
-                log.info(f"Citrini: sent {len(messages)} trade idea message(s) to Discord")
-        except Exception as e:
-            log.warning(f"Citrini email scheduler error: {e}")
-        await asyncio.sleep(interval_sec)
+    await run_interval_scheduler(
+        name="Citrini Email",
+        startup_delay_sec=300,
+        tick_fn=_tick,
+        default_interval_sec=interval_sec,
+        error_interval_sec=interval_sec,
+        on_error_fn=lambda e: _notify_scheduler_error("Citrini email", e),
+        logger=log,
+    )
 
 
 async def _daily_learning_scheduler():
@@ -1084,61 +1061,50 @@ async def _daily_learning_scheduler():
     Tracks signal outcomes, grades traders, processes chart images.
     Sends summary report to Discord digest channel.
     """
-    await asyncio.sleep(180)  # Wait 3 min after startup
-    last_run_date = ""
+    async def _run(local_now):
+        channel = await _get_digest_channel()
+        if channel:
+            await _safe_send(channel, f"🧠 *Daily Learning Cycle* starting at {local_now.strftime('%H:%M %Z')}...")
 
-    while True:
+        minimax_key = os.environ.get("MINIMAX_API_KEY", "")
         try:
-            should_run, run_date, local_now = _is_due_today(last_run_date, *LEARNING_CYCLE_TIME)
-            if should_run:
-                last_run_date = run_date
-                log.info(f"Daily learning cycle triggered ({local_now.strftime('%Y-%m-%d %H:%M %Z')})")
-                channel = await _get_digest_channel()
-                if channel:
-                    await _safe_send(channel, f"🧠 *Daily Learning Cycle* starting at {local_now.strftime('%H:%M %Z')}...")
-                minimax_key = os.environ.get("MINIMAX_API_KEY", "")
-                try:
-                    summary = await asyncio.wait_for(
-                        signal_tracker.run_daily_learning_cycle(
-                            DATA_FILE, api_key=minimax_key
-                        ),
-                        timeout=120,  # 2 minute hard cap
-                    )
-                except asyncio.TimeoutError:
-                    summary = "⚠️ Learning cycle timed out after 2 minutes."
-                log.info(f"Learning cycle complete:\n{summary}")
-                # Send summary to Discord
-                if channel and summary:
-                    # Truncate if needed for Discord limit
-                    report = f"🧠 *Daily Learning Cycle Complete*\n```\n{summary[:1700]}\n```"
-                    await _safe_send(channel, report)
-                elif not channel:
-                    log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID} for learning report")
-            await asyncio.sleep(60)
-        except Exception as e:
-            log.warning(f"Learning cycle error: {e}")
-            # Try to report error to Discord
-            try:
-                ch = await _get_digest_channel()
-                if ch:
-                    await _safe_send(ch, f"⚠️ Learning cycle error: {str(e)[:200]}")
-            except Exception:
-                pass
-            await asyncio.sleep(60)
+            summary = await asyncio.wait_for(
+                signal_tracker.run_daily_learning_cycle(DATA_FILE, api_key=minimax_key),
+                timeout=120,
+            )
+        except asyncio.TimeoutError:
+            summary = "⚠️ Learning cycle timed out after 2 minutes."
+
+        log.info(f"Learning cycle complete:\n{summary}")
+        if channel and summary:
+            report = f"🧠 *Daily Learning Cycle Complete*\n```\n{summary[:1700]}\n```"
+            await _safe_send(channel, report)
+        elif not channel:
+            log.error(f"Cannot find digest channel {DIGEST_CHANNEL_ID} for learning report")
+
+    await run_daily_scheduler(
+        config=DailySchedulerJob(
+            name="Daily Learning Cycle",
+            hour=LEARNING_CYCLE_TIME[0],
+            minute=LEARNING_CYCLE_TIME[1],
+            startup_delay_sec=180,
+        ),
+        is_due_today_fn=_is_due_today,
+        run_job_fn=_run,
+        on_error_fn=lambda e: _notify_scheduler_error("Learning cycle", e),
+        logger=log,
+    )
 
 
 async def _run_and_send_pipeline(channel=None, run_label="Signal Pipeline", send_portfolio_status=False):
     """Run the full signal pipeline and send results to Discord."""
     try:
-        # Refresh signals first
-        await _scrape_recent_signals()
-        await asyncio.sleep(2)
-
+        # Use cached signals (refreshed every 6h via _append_new_signals_only)
         # Run pipeline
         candidates, digest_messages = await signal_pipeline.run_full_pipeline(
             data_file=DATA_FILE,
             call_api_fn=trade_executor.call_api,
-            llm_fn=_call_minimax_anthropic,
+            llm_fn=call_llm_raw,
             discord_days=3,
         )
 
@@ -1231,11 +1197,14 @@ async def on_message(message):
         _save_signal_to_cache(message)
 
     if bot.user.mentioned_in(message):
-        clean = re.sub(r'<@!?\d+>', '', message.content).strip()
+        intent = message_routing.parse_mention_intent(
+            message.content,
+            trade_parse_fn=trade_parser.parse,
+            ticker_extract_fn=extract_ticker,
+        )
 
-        # ---- Trade command? ----
-        cmd = trade_parser.parse(clean)
-        if cmd:
+        if intent.kind == "trade" and intent.trade_command:
+            cmd = intent.trade_command
             log.info(f"Trade: {trade_parser.format_command(cmd)} (from {message.author})")
             await _safe_send(
                 message.channel,
@@ -1254,9 +1223,8 @@ async def on_message(message):
             await bot.process_commands(message)
             return
 
-        # ---- Analysis-only? ----
-        ticker = extract_ticker(clean)
-        if ticker:
+        if intent.kind == "analyze" and intent.ticker:
+            ticker = intent.ticker
             await _safe_send(message.channel, f"🔍 Analyzing *${ticker}*... (checking scanner + signals)")
             try:
                 await run_full_analysis(message.channel, ticker)
@@ -1296,7 +1264,7 @@ async def cmd_signals(ctx, ticker: str = None):
         return await _show_recent_signals(ctx)
 
     ticker = ticker.upper().replace("$", "")
-    msgs, err = get_ticker_messages(ticker, days=30)
+    msgs, err = get_ticker_messages(DATA_FILE, ticker, GOKU_CHANNELS, days=30)
     if err:
         return await ctx.send(f"❌ {err}")
     if not msgs:
@@ -1312,12 +1280,6 @@ async def cmd_signals(ctx, ticker: str = None):
     await _safe_send(ctx, out)
 
 
-@bot.command(name="recent")
-async def cmd_recent(ctx):
-    """Show the most recent signals across all tickers (last 7 days)."""
-    await _show_recent_signals(ctx)
-
-
 @bot.command(name="daily")
 async def cmd_daily(ctx, days: int = 3):
     """Analyze recent signals. Usage: !daily [days] (default 3, max 30)."""
@@ -1325,80 +1287,9 @@ async def cmd_daily(ctx, days: int = 3):
     await _analyze_daily_signals(ctx, days=days)
 
 
-def _collect_recent_messages(days=7):
-    """Collect recent messages from cached data, grouped by ticker.
-
-    Returns:
-        tuple: (ticker_map, all_recent) where ticker_map is {ticker: [msgs]}
-               and all_recent is the flat list sorted by date.
-    """
-    if not os.path.exists(DATA_FILE):
-        return {}, []
-
-    with open(DATA_FILE, 'r') as f:
-        data = json.load(f)
-
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    all_recent = []
-    ticker_map = {}  # ticker -> [messages]
-
-    for channel_id, msgs in data.items():
-        source = "Goku" if channel_id in GOKU_CHANNELS else "Wilson"
-        for msg in msgs:
-            content = msg.get('content', '')
-            ts = msg.get('timestamp', '')
-            # Extract tickers: $TICKER format
-            tickers_found = re.findall(r'\$([A-Z]{1,5})\b', content)
-            # Also extract from "Long: FCEL TER HWM" / "Short: AAPL TSLA" patterns
-            direction_match = re.findall(
-                r'(?:Long|Short|Buy|Sell|Bought|Sold|Adding|Added|Watching)[:\s]+([A-Z]{2,5}(?:\s+[A-Z]{2,5})*)',
-                content,
-            )
-            if direction_match:
-                for group in direction_match:
-                    for t in group.split():
-                        t = t.strip()
-                        if 2 <= len(t) <= 5 and t.isalpha() and t.isupper():
-                            if t not in tickers_found:
-                                tickers_found.append(t)
-            # Also catch standalone uppercase tickers near trading keywords
-            if not tickers_found:
-                # Fallback: look for uppercase words near trading context
-                words = re.findall(r'\b([A-Z]{2,5})\b', content)
-                exclude = {
-                    'THE', 'AND', 'FOR', 'ARE', 'BUT', 'NOT', 'YOU', 'ALL', 'CAN',
-                    'HAS', 'HIS', 'HOW', 'ITS', 'MAY', 'NEW', 'NOW', 'OLD', 'SEE',
-                    'WAY', 'WHO', 'BOT', 'GET', 'LET', 'PUT', 'SAY', 'USE', 'YES',
-                    'BUY', 'SELL', 'HOLD', 'LONG', 'SHORT', 'DCA', 'USD', 'IMO',
-                    'FWIW', 'ATH', 'ATL', 'EMA', 'RSI', 'MACD', 'SMA', 'GDP',
-                    'CPI', 'IPO', 'CEO', 'CFO', 'ETF', 'OTM', 'ITM', 'ATM',
-                }
-                tickers_found = [w for w in words if w not in exclude][:5]
-            if not tickers_found:
-                continue
-            try:
-                dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                if dt > cutoff:
-                    entry = {
-                        "source": source,
-                        "date": ts[:10],
-                        "tickers": tickers_found[:5],
-                        "content": content,
-                        "author": msg.get('author', {}).get('username', 'Unknown'),
-                    }
-                    all_recent.append(entry)
-                    for t in tickers_found[:5]:
-                        ticker_map.setdefault(t, []).append(entry)
-            except Exception:
-                continue
-
-    all_recent.sort(key=lambda x: x['date'], reverse=True)
-    return ticker_map, all_recent
-
-
 async def _show_recent_signals(ctx):
     """Show the most recent signals across all tickers from cached data."""
-    ticker_map, all_recent = _collect_recent_messages(days=7)
+    ticker_map, all_recent = collect_recent_messages(DATA_FILE, GOKU_CHANNELS, days=7)
 
     if not all_recent:
         return await ctx.send("📭 No signals in the last 7 days.")
@@ -1436,149 +1327,66 @@ async def _analyze_daily_signals(ctx, days: int = 3):
     4. Calls LLM to evaluate trade worthiness
     5. Returns actionable summary
     """
-    await _safe_send(ctx, f"🔍 Analyzing signals from Goku & Wilson (last {days} days)... (this may take a moment)")
+    channel_key = getattr(ctx.channel, "id", id(ctx.channel))
+    if channel_key in _daily_in_progress:
+        await _safe_send(ctx, "⏳ Already running a !daily analysis. Please wait for it to finish.")
+        return
+    _daily_in_progress.add(channel_key)
+    try:
+        await _safe_send(ctx, f"🔍 Analyzing signals from Goku & Wilson (last {days} days)... (this may take a moment)")
 
-    ticker_map, all_recent = _collect_recent_messages(days=days)
+        # Use cached signals (refreshed every 6h via _append_new_signals_only)
+        ticker_map, all_recent = collect_recent_messages(DATA_FILE, GOKU_CHANNELS, days=days)
 
-    if not all_recent:
-        return await ctx.send(f"📭 No signals in the last {days} days to analyze.")
+        if not all_recent:
+            return await ctx.send(f"📭 No signals in the last {days} days to analyze.")
 
-    # Sort by mention count — focus on most-discussed tickers
-    sorted_tickers = sorted(ticker_map.items(), key=lambda x: len(x[1]), reverse=True)
-    top_tickers = sorted_tickers[:8]  # Analyze top 8 tickers
+        # Sort by mention count — focus on most-discussed tickers
+        sorted_tickers = sorted(ticker_map.items(), key=lambda x: len(x[1]), reverse=True)
+        top_tickers = sorted_tickers[:8]  # Analyze top 8 tickers
 
-    # Build signal summary for LLM
-    signal_summaries = []
-    for ticker, msgs in top_tickers:
-        goku_msgs = [m for m in msgs if m['source'] == 'Goku']
-        wilson_msgs = [m for m in msgs if m['source'] == 'Wilson']
-
-        # Fetch current price context
-        ctx_data = get_stock_context(ticker)
-        price_str = ""
-        if ctx_data and 'error' not in ctx_data:
-            price_str = (
-                f"Price: ${ctx_data.get('current_price', '?')} | "
-                f"EMA8: ${ctx_data.get('ema8', '?')} | "
-                f"EMA21: ${ctx_data.get('ema21', '?')} | "
-                f"RSI: {ctx_data.get('rsi', '?')}"
+        content = daily_signal_analysis.run_daily_llm_analysis(
+            top_tickers=top_tickers,
+            days=days,
+            llm_fn=call_llm_raw,
+            get_stock_context_fn=get_stock_context,
+            pattern_library_module=pattern_library,
+            logger=log,
+        )
+        # Retry once before giving up; avoid sending noisy fallback output.
+        if not content:
+            await asyncio.sleep(1)
+            content = daily_signal_analysis.run_daily_llm_analysis(
+                top_tickers=top_tickers,
+                days=days,
+                llm_fn=call_llm_raw,
+                get_stock_context_fn=get_stock_context,
+                pattern_library_module=pattern_library,
+                logger=log,
             )
-
-        goku_text = "\n".join(
-            f"  [{m['date']}] {m['author']}: {m['content'][:150]}"
-            for m in goku_msgs[:5]
-        )
-        wilson_text = "\n".join(
-            f"  [{m['date']}] {m['author']}: {m['content'][:150]}"
-            for m in wilson_msgs[:5]
-        )
-
-        signal_summaries.append(
-            f"${ticker} ({len(msgs)} mentions, Goku:{len(goku_msgs)} Wilson:{len(wilson_msgs)})\n"
-            f"  {price_str}\n"
-            f"  Goku signals:\n{goku_text or '    None'}\n"
-            f"  Wilson signals:\n{wilson_text or '    None'}"
-        )
-
-    signals_block = "\n\n".join(signal_summaries)
-
-    # Add pattern library context for informed decisions
-    pattern_context = ""
-    try:
-        pat_records = pattern_library.load_pattern_db()
-        if pat_records:
-            pat_stats = pattern_library.compute_pattern_stats(pat_records)
-            pat_lines = []
-            for ticker_name, msgs_list in top_tickers:
-                raw_msgs = msgs_list
-                found = {}
-                for m in raw_msgs:
-                    content = m.get('content', '')
-                    recs = pattern_library.extract_patterns(content, ticker_name)
-                    for rec in recs:
-                        s = pat_stats.get(rec.pattern_name)
-                        if s and s.tracked >= 3:
-                            found[rec.pattern_name] = (rec.pattern_display, s.win_rate,
-                                                        s.avg_return_5d, s.avg_return_10d, s.avg_return_20d)
-                if found:
-                    parts = []
-                    for name, (display, wr, r5, r10, r20) in found.items():
-                        best_hold = '5d' if r5 >= r10 and r5 >= r20 else ('10d' if r10 >= r20 else '20d')
-                        parts.append(f"{display}: {wr:.0%} WR, best hold={best_hold}")
-                    pat_lines.append(f"${ticker_name}: {'; '.join(parts)}")
-            if pat_lines:
-                pattern_context = "\n\nPATTERN LIBRARY (historical win rates from 1-year backtest):\n" + "\n".join(pat_lines)
-    except Exception as e:
-        log.debug(f"Pattern context error: {e}")
-
-    prompt = f"""You are an elite trading desk analyst. Analyze these recent Discord signals
-from two trader channels (Goku = technical, Wilson = fundamental) and determine
-which tickers are worth trading TODAY.
-
-RECENT SIGNALS (last {days} days):
-{signals_block}
-{pattern_context}
-
-For each ticker, evaluate:
-1. Signal strength (how many mentions, consistency of bias)
-2. Technical setup (price vs EMAs, RSI)
-3. Pattern history (use the PATTERN LIBRARY data — patterns with >70% WR are strong setups)
-4. Risk level and recommended hold period (based on pattern best hold period)
-5. Whether it's ACTIONABLE now or should WAIT
-
-Format your response for Discord (<1800 chars):
-*Daily Signal Analysis*
-
-For each ticker use this format:
-🟢 $TICKER — BUY (pattern name, WR%, entry zone, hold X days)
-🔴 $TICKER — SELL/SHORT (reason, stop level)
-🟡 $TICKER — WAIT (trigger to watch, expected setup)
-⚪ $TICKER — NO TRADE (why skip)
-
-End with a 1-line overall market read.
-Use single asterisks for bold. Be specific with price levels and hold periods."""
-
-    try:
-        response = _call_minimax_anthropic(prompt, 2000, {}, "DAILY", [])
-        content = ""
-        if response.get("raw_response"):
-            content = response["raw_response"]
-        elif response.get("raw_llm"):
-            content = response["raw_llm"]
-
         if content:
-            content = content.replace("```", "").replace("**", "*")
             await _safe_send(ctx, content[:1900])
         else:
-            # LLM failed — provide a basic summary without LLM
-            await _send_basic_daily_summary(ctx, top_tickers)
-
+            log.warning(
+                f"!daily LLM returned no content (instance={_BOT_INSTANCE_ID}). "
+                "If you see duplicate responses, another bot instance may have succeeded."
+            )
+            await _safe_send(
+                ctx,
+                "⚠️ `!daily` analysis is temporarily unavailable (LLM did not return usable output). "
+                "Please retry in ~1 minute."
+            )
     except Exception as e:
-        log.warning(f"Daily analysis LLM failed: {e}")
-        await _send_basic_daily_summary(ctx, top_tickers)
-
-
-async def _send_basic_daily_summary(ctx, top_tickers):
-    """Fallback: basic signal summary without LLM analysis."""
-    out = "*Daily Signal Summary* (LLM unavailable — raw counts)\n\n"
-    for ticker, msgs in top_tickers:
-        goku = sum(1 for m in msgs if m['source'] == 'Goku')
-        wilson = sum(1 for m in msgs if m['source'] == 'Wilson')
-        ctx_data = get_stock_context(ticker)
-        price_str = ""
-        if ctx_data and 'error' not in ctx_data:
-            price = ctx_data.get('current_price', '?')
-            rsi = ctx_data.get('rsi', '?')
-            price_str = f" — ${price} (RSI: {rsi})"
-
-        out += f"• *${ticker}*{price_str} — {len(msgs)} mentions "
-        out += f"(📊Goku:{goku} 📈Wilson:{wilson})\n"
-        # Show latest signal snippet
-        latest = msgs[0]['content'][:80].replace('\n', ' ')
-        out += f"  ↳ _{latest}_...\n\n"
-
-    out += "💡 Use `!analyze TICKER` for deep analysis on any ticker."
-    await _safe_send(ctx, out)
+        log.warning(
+            f"!daily LLM failed (instance={_BOT_INSTANCE_ID}): {e}. "
+            "If you see duplicate responses, another bot instance may have succeeded."
+        )
+        await _safe_send(
+            ctx,
+            "⚠️ `!daily` analysis failed due to an LLM/API error. Please retry in ~1 minute."
+        )
+    finally:
+        _daily_in_progress.discard(channel_key)
 
 
 @bot.command(name="positions")
@@ -1654,7 +1462,7 @@ async def cmd_orders(ctx):
 
 @bot.command(name="pipeline")
 async def cmd_pipeline(ctx):
-    """Manually trigger the full signal pipeline. Auto-trades in paper mode."""
+    """Manually trigger the full signal pipeline."""
     await _safe_send(ctx, "🔄 Running full signal pipeline... (signals + scanner + ranking)")
     try:
         candidates = await _run_and_send_pipeline(channel=ctx)
@@ -1662,37 +1470,11 @@ async def cmd_pipeline(ctx):
             await _safe_send(ctx, "⚠️ Pipeline completed but no candidates generated.")
             return
 
-        # Auto-trade in paper mode — skip approval for BUY candidates
-        try:
-            health = await trade_executor.call_api("/api/health")
-            is_paper = health.get("trading_mode") == "paper"
-        except Exception:
-            is_paper = False
-
-        if is_paper:
-            buy_candidates = [c for c in candidates if c.action == "BUY"][:3]
-            if buy_candidates:
-                await _safe_send(ctx, f"\n📝 *Paper mode detected* — auto-executing top {len(buy_candidates)} BUY signals...")
-                for c in buy_candidates:
-                    try:
-                        params = signal_pipeline.generate_order_params(c, "limit")
-                        result = await trade_executor.call_api("/api/trade", method="POST", payload=params)
-                        status = "✅" if result.get("success") else "⚠️"
-                        msg = result.get("message", result.get("error", "sent"))
-                        lp = params.get("limit_price", "MKT")
-                        await _safe_send(
-                            ctx,
-                            f"{status} ${c.ticker}: {params['order_type']} @ ${lp} | "
-                            f"Stop ${params.get('stop_loss')} | Target ${params.get('target')} — {msg}"
-                        )
-                        signal_pipeline.save_approved(c.ticker, params)
-                        await asyncio.sleep(1)
-                    except Exception as e:
-                        await _safe_send(ctx, f"❌ ${c.ticker} order failed: {str(e)[:100]}")
-            else:
-                await _safe_send(ctx, "📝 Paper mode — no candidates scored high enough for auto-trade (need score >= 6).")
-        else:
-            await _safe_send(ctx, "🔒 *Live mode* — use `!approve TICKER` to place orders after review.")
+        await _safe_send(
+            ctx,
+            "✅ Pipeline run complete. "
+            "Auto-trading (paper mode) is handled once inside the pipeline engine.",
+        )
 
     except Exception as e:
         log.exception(f"Pipeline command error: {e}")
@@ -1734,84 +1516,26 @@ async def cmd_citrini(ctx):
         await asyncio.sleep(1)
 
 
-@bot.command(name="midday")
-async def cmd_midday(ctx):
-    """Run mid-day portfolio review manually."""
-    await _safe_send(ctx, "☀️ Running mid-day portfolio review...")
-    try:
-        await portfolio_manager.run_midday_check(ctx.send)
-    except Exception as e:
-        log.exception(f"Mid-day command error: {e}")
-        await _safe_send(ctx, f"❌ Check failed: {str(e)}")
-
-
-@bot.command(name="approve")
-async def cmd_approve(ctx, *args):
-    """Approve pipeline candidate(s) and queue trade orders.
-
-    Supports single or multiple tickers:
-      !approve PBR
-      !approve PBR HOOD NVDA
-      !approve PBR market       (last arg = order type if 'market' or 'limit')
-    """
-    if not args:
-        return await _safe_send(ctx, "Usage: `!approve TICKER [TICKER2 ...]` or `!approve TICKER market`")
-
-    # Parse args: last arg might be order_type
-    args_list = list(args)
-    order_type = "limit"
-    if args_list[-1].lower() in ("market", "limit", "mkt", "lmt"):
-        order_type = "market" if args_list[-1].lower() in ("market", "mkt") else "limit"
-        args_list = args_list[:-1]
-
-    if not args_list:
-        return await _safe_send(ctx, "Usage: `!approve TICKER [TICKER2 ...]`")
-
-    tickers = [t.upper().replace("$", "") for t in args_list]
-
-    # Load saved candidates
-    candidates = signal_pipeline.load_candidates()
-    if not candidates:
-        return await _safe_send(ctx, "\u274c No pipeline candidates found. Run `!pipeline` first.")
-
-    results = []
-    for ticker in tickers:
-        match = next((c for c in candidates if c.ticker == ticker), None)
-        if not match:
-            available = ", ".join(c.ticker for c in candidates[:10])
-            results.append(f"\u274c {ticker} not in candidates. Available: {available}")
-            continue
-
-        params = signal_pipeline.generate_order_params(match, order_type)
-        signal_pipeline.save_approved(ticker, params)
-
-        try:
-            result = await trade_executor.call_api("/api/trade", method="POST", payload=params)
-            if result.get("success"):
-                fill_info = result.get("message", "Order placed")
-                lp = params.get("limit_price", 0)
-                sl = params.get("stop_loss", 0)
-                tgt = params.get("target", 0)
-                results.append(
-                    f"\u2705 *${ticker}* \u2014 {params.get('order_type', 'LMT')} "
-                    f"@ ${lp:.2f} | Stop ${sl:.2f} | Target ${tgt:.2f} \u2014 {fill_info}"
-                )
-            else:
-                error = result.get("error", "Unknown error")
-                results.append(f"\u26a0\ufe0f ${ticker}: API returned: {error}")
-        except Exception as e:
-            results.append(f"\u26a0\ufe0f ${ticker}: saved locally, API failed: {str(e)[:80]}")
-
-        await asyncio.sleep(1)  # Rate limit between orders
-
-    count = len(tickers)
-    header = f"\U0001f4cb *Approve Results* ({count} ticker{'s' if count > 1 else ''}):\n\n"
-    await _safe_send(ctx, header + "\n".join(results))
-
-
 @bot.command(name="portfolio")
-async def cmd_portfolio(ctx):
-    """Get portfolio management suggestions for existing positions."""
+async def cmd_portfolio(ctx, mode: str = ""):
+    """
+    Portfolio command:
+    - !portfolio            -> position management suggestions
+    - !portfolio midday     -> run midday portfolio review check
+    """
+    mode = (mode or "").lower().strip()
+    if mode in {"midday", "review", "check"}:
+        await _safe_send(ctx, "☀️ Running mid-day portfolio review...")
+        try:
+            await portfolio_manager.run_midday_check(ctx.send)
+        except Exception as e:
+            log.exception(f"Mid-day portfolio mode error: {e}")
+            await _safe_send(ctx, f"❌ Check failed: {str(e)}")
+        return
+
+    if mode:
+        return await _safe_send(ctx, "Usage: `!portfolio` or `!portfolio midday`")
+
     # Get current positions
     positions = await trade_executor.call_api("/api/positions")
     if isinstance(positions, dict) and positions.get("error"):
@@ -1827,8 +1551,77 @@ async def cmd_portfolio(ctx):
     await _safe_send(ctx, suggestions)
 
 
-@bot.command(name="patterns")
-async def cmd_patterns(ctx):
+@bot.command(name="prodstatus")
+async def cmd_prodstatus(ctx):
+    """
+    Production account portfolio snapshot.
+    Shows account mode, net liq, cash, buying power, and current positions.
+    """
+    health = await trade_executor.call_api("/api/health")
+    if not isinstance(health, dict):
+        return await _safe_send(ctx, "⚠️ Trading Server not reachable. Check TRADE_API_URL and that the GCloud VM is running.")
+    if not health.get("connected"):
+        return await _safe_send(
+            ctx,
+            "⚠️ Trading Server reachable but IB Gateway disconnected. "
+            "Log in to IB Gateway on the GCloud VM (VNC or restart saiyan-ibgateway)."
+        )
+
+    mode = str(health.get("trading_mode", "unknown")).lower()
+    mode_icon = "🟢" if mode == "live" else ("🟡" if mode == "paper" else "⚪")
+
+    acct = await trade_executor.call_api("/api/account")
+    positions = await trade_executor.call_api("/api/positions")
+    if not isinstance(positions, list):
+        positions = []
+
+    lines = [f"{mode_icon} *Production Account Status*"]
+    lines.append(f"Mode: *{mode.upper()}*")
+
+    if isinstance(acct, dict) and not acct.get("error"):
+        net_liq = acct.get("net_liquidation")
+        cash = acct.get("cash")
+        buying_power = acct.get("buying_power")
+        excess_liq = acct.get("excess_liquidity")
+        if net_liq is not None:
+            lines.append(f"Net Liq: ${net_liq:,.0f}")
+        if cash is not None:
+            lines.append(f"Cash: ${cash:,.0f}")
+        if buying_power is not None:
+            lines.append(f"Buying Power: ${buying_power:,.0f}")
+        if excess_liq is not None:
+            lines.append(f"Excess Liquidity: ${excess_liq:,.0f}")
+
+    if not positions:
+        lines.append("\n📭 No open positions.")
+        return await _safe_send(ctx, "\n".join(lines))
+
+    total_pnl = 0.0
+    lines.append(f"\n*Open Positions ({len(positions)}):*")
+    for p in positions[:15]:
+        symbol = p.get("symbol", "?")
+        qty = float(p.get("quantity", 0))
+        avg = float(p.get("avg_cost", 0) or 0)
+        mkt = float(p.get("market_price", 0) or 0)
+        pnl = float(p.get("pnl", 0) or 0)
+        total_pnl += pnl
+        side = "LONG" if qty >= 0 else "SHORT"
+        pnl_icon = "🟢" if pnl >= 0 else "🔴"
+        pnl_pct = ((mkt / avg - 1) * 100) if avg > 0 and mkt > 0 else 0
+        lines.append(
+            f"{pnl_icon} *{symbol}* {side} {abs(qty):.0f} @ ${avg:.2f} → ${mkt:.2f} ({pnl_pct:+.1f}%)"
+        )
+
+    total_icon = "🟢" if total_pnl >= 0 else "🔴"
+    total_str = f"+${total_pnl:,.0f}" if total_pnl >= 0 else f"-${abs(total_pnl):,.0f}"
+    lines.append(f"\n{total_icon} *Total Unrealized P&L:* {total_str}")
+    if mode != "live":
+        lines.append("\n⚠️ Note: account is not in LIVE mode.")
+
+    await _safe_send(ctx, "\n".join(lines))
+
+
+async def _run_research_patterns(ctx):
     """Show pattern win rates from historical signal tracking."""
     try:
         records = pattern_library.load_pattern_db()
@@ -1841,7 +1634,7 @@ async def cmd_patterns(ctx):
                 pattern_library.save_pattern_db(records)
 
         if not records:
-            return await _safe_send(ctx, "📭 No pattern data. Run `!learn` first.")
+            return await _safe_send(ctx, "📭 No pattern data. Run `!research learn` first.")
 
         stats = pattern_library.compute_pattern_stats(records)
         output = pattern_library.format_pattern_stats_discord(stats)
@@ -1850,8 +1643,7 @@ async def cmd_patterns(ctx):
         await _safe_send(ctx, f"❌ Pattern error: {str(e)[:200]}")
 
 
-@bot.command(name="learn")
-async def cmd_learn(ctx):
+async def _run_research_learn(ctx):
     """Manually trigger the learning cycle — track outcomes + grade traders."""
     await _safe_send(ctx, "🧠 Running learning cycle... (batch-fetching prices, ~30s)")
     try:
@@ -1864,25 +1656,61 @@ async def cmd_learn(ctx):
         for chunk in [summary[i:i+1900] for i in range(0, len(summary), 1900)]:
             await _safe_send(ctx, f"```\n{chunk}\n```")
     except asyncio.TimeoutError:
-        await _safe_send(ctx, "⚠️ Learning cycle timed out (>2 min). Partial data saved. Try `!grades` or `!patterns` to see what was collected.")
+        await _safe_send(
+            ctx,
+            "⚠️ Learning cycle timed out (>2 min). Partial data saved. "
+            "Try `!research grades` or `!research patterns`.",
+        )
     except Exception as e:
         log.exception(f"Learn command error: {e}")
         await _safe_send(ctx, f"❌ Learning error: {str(e)[:200]}")
 
 
-@bot.command(name="grades")
-async def cmd_grades(ctx):
+async def _run_research_grades(ctx):
     """Show trader performance grades based on signal outcomes."""
     try:
         records = signal_tracker.load_performance()
         if not records:
-            return await _safe_send(ctx, "📭 No signal data yet. Run `!learn` first to start tracking.")
+            return await _safe_send(ctx, "📭 No signal data yet. Run `!research learn` first.")
 
         grades = signal_tracker.compute_grades(records)
         output = signal_tracker.format_grades_for_discord(grades)
         await _safe_send(ctx, output)
     except Exception as e:
         await _safe_send(ctx, f"❌ Error loading grades: {str(e)[:200]}")
+
+
+@bot.command(name="research")
+async def cmd_research(ctx, mode: str = "help"):
+    """
+    Unified research command namespace.
+
+    Usage:
+      !research learn
+      !research grades
+      !research patterns
+    """
+    mode = (mode or "help").lower().strip()
+    if mode in {"help", "-h", "--help"}:
+        return await _safe_send(
+            ctx,
+            "Usage: `!research learn|grades|patterns`\n"
+            "• `learn` -> run learning cycle\n"
+            "• `grades` -> show trader grades\n"
+            "• `patterns` -> show pattern win rates",
+        )
+
+    if mode in {"learn", "cycle"}:
+        return await _run_research_learn(ctx)
+    if mode in {"grades", "grade"}:
+        return await _run_research_grades(ctx)
+    if mode in {"patterns", "pattern"}:
+        return await _run_research_patterns(ctx)
+
+    return await _safe_send(
+        ctx,
+        f"Unknown research mode: `{mode}`. Use `!research learn|grades|patterns`.",
+    )
 
 
 @bot.command(name="help_trading")
@@ -1899,21 +1727,20 @@ HELP_TEXT = (
     "📊 **Analysis:**\n"
     "• `@bot $AAPL` — Analyze ticker\n"
     "• `!analyze NVDA` — Deep analysis\n"
+    "• `!signals AAPL` / `!signals recent` — Browse signals\n"
     "• `!daily [N]` — Analyze last N days signals (default 3)\n\n"
     "📡 **Pipeline & Auto-Trading:**\n"
     "• `!pipeline` — Full pipeline (signals + scanner + auto-trade in paper)\n"
     "• `!citrini` — Check Citrini emails, extract trade ideas, post to Discord\n"
-    "• `!approve TICKER` — Approve & place limit order\n"
-    "• `!midday` — Run mid-day portfolio review\n"
-    "• `!portfolio` — Position management suggestions\n\n"
+    "• `!portfolio` — Position management suggestions\n"
+    "• `!portfolio midday` — Run mid-day portfolio review\n\n"
+    "• `!prodstatus` — Production account status snapshot\n\n"
     "🧠 **Self-Learning:**\n"
-    "• `!learn` — Track outcomes + grade traders + analyze patterns\n"
-    "• `!grades` — Trader performance report\n"
-    "• `!patterns` — Pattern win rates (C&H, flag, breakout, etc.)\n\n"
+    "• `!research learn|grades|patterns` — Learning/grades/pattern stats\n\n"
     "🛒 **Manual Trading:**\n"
     "• `@bot buy HOOD` — Buy at EMA21\n"
     "• `@bot buy HOOD 2x` — 2 scaled entries\n"
-    "• `!signals AAPL` / `!recent` — Browse signals\n\n"
+    "• `@bot buy HOOD 5000usd` — Dollar-sized entry\n\n"
     "📋 **Info:**\n"
     "• `!positions` — Positions with P&L\n"
     "• `!orders` — Open orders\n"

@@ -34,6 +34,7 @@ try:
 except Exception:  # pragma: no cover
     load_dotenv = None
 
+from src.universe.universe_config import load_stock_universe
 from src.utils.emailer import (
     build_email_message,
     load_email_config_from_env,
@@ -42,7 +43,7 @@ from src.utils.emailer import (
     send_email_smtp,
 )
 
-from tools.scanner import load_universe, run_scan
+from tools.scanner import run_scan
 
 
 def _parse_hhmm(value: str) -> Tuple[int, int]:
@@ -67,7 +68,7 @@ def _next_run_at(hhmm: str) -> datetime:
 
 
 def _resolve_symbols(args) -> Tuple[List[str], Optional[str]]:
-    universe = load_universe()
+    universe = load_stock_universe()
     theme_name = None
 
     if args.symbols:

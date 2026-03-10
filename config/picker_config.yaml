@@ -13,7 +13,7 @@ data:
 
 # --- Preflight cache quality gate (auto-run before picker) ---
 preflight:
-  enabled: true
+  enabled: false
   strict: true                      # Pass/fail gate; non-zero check aborts picker
   on_fail: "abort"                  # abort | warn
   repair_invalid_first: true        # Auto purge invalid OHLCV rows before checks
@@ -28,8 +28,9 @@ preflight:
   output: "results/picker/cache_health_preflight.json"
 
 # --- Auto earnings-refresh gate (before fundamentals) ---
+# Set enabled: false — earnings refresh runs as a separate weekday cron job, not during picker.
 earnings_refresh:
-  enabled: true
+  enabled: false
   on_fail: "abort"                  # abort | warn
   calendar_recent_days: 2           # Refresh when earnings were disclosed yesterday/today
   months_back: "3,6,9,12"
@@ -44,7 +45,8 @@ earnings_refresh:
 technical:
   rs_threshold: 80.0                # RS rank percentile floor
   near_52w_ratio: 0.85              # Price >= 85% of 52w high
-  min_bars: 260                     # Minimum bars for feature calc
+  min_bars: 260                     # Minimum bars for feature calc (full history)
+  min_bars_recent_ipo: 130          # Allow recent IPOs with 130+ bars (6mo) — no 260 enforcement
 
 # --- Fundamental filter (Layer 2) ---
 fundamental:

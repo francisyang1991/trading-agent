@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from email.message import EmailMessage
+from email.policy import SMTPUTF8
 import mimetypes
 import os
 from pathlib import Path
@@ -76,7 +77,7 @@ def load_email_config_from_env(prefix: str = "") -> Tuple[Optional[SmtpConfig], 
         host=host,
         port=port,
         username=get("SMTP_USERNAME", "").strip(),
-        password=get("SMTP_PASSWORD", ""),
+        password=get("SMTP_PASSWORD", "").replace("\xa0", " ").strip(),
         use_tls=use_tls,
     )
 
@@ -150,12 +151,15 @@ def build_email_message(
     sender: str,
     recipients: Sequence[str],
     attachments: Optional[Iterable[Path]] = None,
+    body_html: Optional[str] = None,
 ) -> EmailMessage:
-    msg = EmailMessage()
+    msg = EmailMessage(policy=SMTPUTF8)
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
-    msg.set_content(body_text)
+    msg.set_content(body_text, charset="utf-8")
+    if body_html:
+        msg.add_alternative(body_html, subtype="html", charset="utf-8")
 
     for path in attachments or []:
         p = Path(path)

@@ -144,83 +144,68 @@ class TrendIndicators:
             price_vs_trend=(price - ema_t) / ema_t * 100 if ema_t > 0 else 0
         )
     
+    def _find_swing_points(
+        self,
+        data: pd.DataFrame,
+        column: str,
+        find_highs: bool,
+        lookback: int = None
+    ) -> List[Tuple[int, float]]:
+        """
+        Find swing high or low points.
+
+        Args:
+            data: OHLCV DataFrame
+            column: Column to search ('high' for highs, 'low' for lows)
+            find_highs: True to find swing highs, False for swing lows
+            lookback: Bars on each side to confirm swing
+
+        Returns:
+            List of (index, price) tuples
+        """
+        if lookback is None:
+            lookback = self.swing_lookback
+
+        if len(data) < lookback * 2 + 1:
+            return []
+
+        swing_points = []
+        values = data[column].values
+
+        for i in range(lookback, len(data) - lookback):
+            is_swing = True
+            current = values[i]
+
+            for j in range(1, lookback + 1):
+                if find_highs:
+                    if values[i - j] >= current or values[i + j] >= current:
+                        is_swing = False
+                        break
+                else:
+                    if values[i - j] <= current or values[i + j] <= current:
+                        is_swing = False
+                        break
+
+            if is_swing:
+                swing_points.append((i, current))
+
+        return swing_points
+
     def find_swing_highs(
         self,
         data: pd.DataFrame,
         lookback: int = None
     ) -> List[Tuple[int, float]]:
-        """
-        Find swing high points.
-        
-        Args:
-            data: OHLCV DataFrame
-            lookback: Bars on each side to confirm swing
-            
-        Returns:
-            List of (index, price) tuples
-        """
-        if lookback is None:
-            lookback = self.swing_lookback
-        
-        if len(data) < lookback * 2 + 1:
-            return []
-        
-        swing_highs = []
-        highs = data['high'].values
-        
-        for i in range(lookback, len(data) - lookback):
-            is_swing_high = True
-            current_high = highs[i]
-            
-            # Check if current is higher than surrounding bars
-            for j in range(1, lookback + 1):
-                if highs[i - j] >= current_high or highs[i + j] >= current_high:
-                    is_swing_high = False
-                    break
-            
-            if is_swing_high:
-                swing_highs.append((i, current_high))
-        
-        return swing_highs
-    
+        """Find swing high points."""
+        return self._find_swing_points(data, 'high', find_highs=True, lookback=lookback)
+
     def find_swing_lows(
         self,
         data: pd.DataFrame,
         lookback: int = None
     ) -> List[Tuple[int, float]]:
-        """
-        Find swing low points.
-        
-        Args:
-            data: OHLCV DataFrame
-            lookback: Bars on each side to confirm swing
-            
-        Returns:
-            List of (index, price) tuples
-        """
-        if lookback is None:
-            lookback = self.swing_lookback
-        
-        if len(data) < lookback * 2 + 1:
-            return []
-        
-        swing_lows = []
-        lows = data['low'].values
-        
-        for i in range(lookback, len(data) - lookback):
-            is_swing_low = True
-            current_low = lows[i]
-            
-            # Check if current is lower than surrounding bars
-            for j in range(1, lookback + 1):
-                if lows[i - j] <= current_low or lows[i + j] <= current_low:
-                    is_swing_low = False
-                    break
-            
-            if is_swing_low:
-                swing_lows.append((i, current_low))
-        
-        return swing_lows
+        """Find swing low points."""
+        return self._find_swing_points(data, 'low', find_highs=False, lookback=lookback)
     
     def has_higher_highs(
         self,
@@ -592,3 +577,39 @@ def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     rsi = 100 - (100 / (1 + rs))
     
     return rsi
+
+
+# ── Series-based adapters (for tools using pd.Series with Close/High/Low) ───
+
+def calculate_ema_series(data: pd.Series, period: int) -> pd.Series:
+    """
+    Calculate Exponential Moving Average on a price series.
+    Use this for Series-based callers (e.g. tools with yfinance Close).
+    """
+    return data.ewm(span=period, adjust=False).mean()
+
+
+def calculate_rsi_series(data: pd.Series, period: int = 14) -> pd.Series:
+    """
+    Calculate RSI on a close price series.
+    Use this for Series-based callers.
+    """
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+
+def calculate_atr_series(
+    high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
+) -> pd.Series:
+    """
+    Calculate ATR from OHLC series.
+    Use this for Series-based callers (e.g. tools with yfinance High/Low/Close).
+    """
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(window=period).mean()
