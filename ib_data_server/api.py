@@ -76,6 +76,51 @@ def get_bars_payload(
     }
 
 
+def _normalize_interval(interval: str) -> str:
+    value = interval.strip().lower()
+    aliases = {
+        "1d": "1 day",
+        "1day": "1 day",
+        "1 day": "1 day",
+        "1m": "1 min",
+        "1min": "1 min",
+        "1 min": "1 min",
+        "5m": "5 mins",
+        "5min": "5 mins",
+        "5 mins": "5 mins",
+        "15m": "15 mins",
+        "15min": "15 mins",
+        "15 mins": "15 mins",
+        "30m": "30 mins",
+        "30min": "30 mins",
+        "30 mins": "30 mins",
+        "1h": "1 hour",
+        "1hour": "1 hour",
+        "1 hour": "1 hour",
+    }
+    return aliases.get(value, interval)
+
+
+def _history_payload(rows: list[dict], bar_size: str) -> list[dict]:
+    daily = bar_size == "1 day"
+    payload = []
+    for row in rows:
+        ts = row["ts"]
+        if daily:
+            ts = ts.split("T", 1)[0].split(" ", 1)[0]
+        payload.append(
+            {
+                "Date": ts,
+                "Open": row["open"],
+                "High": row["high"],
+                "Low": row["low"],
+                "Close": row["close"],
+                "Volume": row["volume"],
+            }
+        )
+    return payload
+
+
 @app.get("/bars/{symbol}")
 def get_bars(
     symbol: str,
@@ -124,9 +169,10 @@ def get_api_history(
     interval: str = Query("1d"),
     limit: int = Query(5000, ge=1, le=50000),
 ):
-    bar_size = "1 day" if interval == "1d" else interval
+    bar_size = _normalize_interval(interval)
     start = _period_to_start(period)
-    return get_bars_payload(symbol, bar_size, start, None, limit)
+    payload = get_bars_payload(symbol, bar_size, start, None, limit)
+    return _history_payload(payload["bars"], bar_size)
 
 
 @app.get("/symbols")
