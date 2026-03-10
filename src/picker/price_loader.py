@@ -13,6 +13,7 @@ from typing import Any, Dict
 import pandas as pd
 
 from src.data.providers.resilient import fallback_price_fetch
+from src.data.routing import DataRoutingConfig
 from src.data.providers.yfinance_provider import batch_download_daily_ohlcv
 
 
@@ -42,6 +43,7 @@ def stage_load_prices(
     data_cfg = cfg.get("data", {})
     ibkr_cfg = cfg.get("ibkr", {})
     period = data_cfg.get("period", "2y")
+    routing = DataRoutingConfig.from_env()
 
     # A: cache (DB only - no API; slow when many symbols due to per-symbol queries)
     print("\n[A] Load cached prices from DB")
@@ -55,12 +57,13 @@ def stage_load_prices(
     missing = [s for s in symbols if s not in prices]
     print(f"  cache={len(prices)} missing={len(missing)} ({time.time()-t0:.1f}s)")
 
-    # B: Yahoo bulk
-    if missing:
+    def _run_yahoo_bulk(missing_symbols: list[str]) -> None:
+        nonlocal missing, prices
         print("\n[B] Yahoo bulk fetch")
         t1 = time.time()
         yahoo = batch_download_daily_ohlcv(
-            symbols=missing, period=period,
+            symbols=missing_symbols,
+            period=period,
             batch_size=data_cfg.get("batch_size", 200),
             threads=data_cfg.get("yf_threads", False),
             progress_hook=lambda done, total: print(f"  [yahoo] {done}/{total} ({100*done/total:.1f}%)"),
@@ -72,15 +75,15 @@ def stage_load_prices(
         missing = [s for s in symbols if s not in prices]
         print(f"  yahoo={len(yahoo)} missing={len(missing)} ({time.time()-t1:.1f}s)")
 
-    # C: Fallback (IBKR GCloud -> local -> Stooq)
-    if missing:
-        print(f"\n[C] Fallback for {len(missing)} remaining")
+    def _run_fallback(missing_symbols: list[str], stage_label: str) -> None:
+        nonlocal missing, prices
+        print(f"\n[{stage_label}] IBKR fallback for {len(missing_symbols)} remaining")
         t2 = time.time()
         ib_host, ib_port = _parse_ibkr_endpoint(
             ibkr_cfg.get("local_gateway_url", "127.0.0.1:4002")
         )
         fallback = {}
-        for i, sym in enumerate(missing, 1):
+        for i, sym in enumerate(missing_symbols, 1):
             data, _ = fallback_price_fetch(
                 symbol=sym, period=period,
                 gcloud_base_url=ibkr_cfg.get("gcloud_trade_api_url", "").rstrip("/"),
@@ -91,11 +94,22 @@ def stage_load_prices(
             if data is not None and not data.empty:
                 prices[sym] = data
                 fallback[sym] = data
-            if i % 100 == 0 or i == len(missing):
-                pct = 100 * i / len(missing) if missing else 0
+            if i % 100 == 0 or i == len(missing_symbols):
+                pct = 100 * i / len(missing_symbols) if missing_symbols else 0
                 print(f"  [fallback] {i}/{len(missing)} ({pct:.1f}%)")
         if fallback:
             dm.persist_prices(fallback)
+        missing = [s for s in symbols if s not in prices]
         print(f"  resolved={len(fallback)} ({time.time()-t2:.1f}s)")
+
+    if missing and routing.mode == "prod":
+        _run_fallback(missing, "B")
+        if missing:
+            _run_yahoo_bulk(missing)
+    else:
+        if missing:
+            _run_yahoo_bulk(missing)
+        if missing:
+            _run_fallback(missing, "C")
 
     return prices

@@ -59,10 +59,13 @@ from src.data.mysql_store import MySQLFundamentalsStore
 from src.data.providers import (
     FMPProvider,
     IBKRGcloudFundamentalProvider,
+    IBKRGcloudMarketProvider,
+    IBKRLocalMarketProvider,
     ResilientFundamentalProvider,
     ResilientMarketDataProvider,
     YFinanceProvider,
 )
+from src.data.routing import DataRoutingConfig
 from src.data.schemas import validate_daily_ohlcv, validate_quarterly_fundamentals
 
 
@@ -183,6 +186,8 @@ class DataManager:
         max_daily_age_hours: int = 12,
         max_fundamental_age_days: int = 7,
         parquet_root_dir: str = "data",
+        data_mode: Optional[str] = None,
+        routing: Optional[DataRoutingConfig] = None,
     ):
         """
         Initialize DataManager.
@@ -197,16 +202,46 @@ class DataManager:
         self._cache = {}  # In-memory cache for current session
         self.parquet_store = ParquetDataStore(parquet_root_dir)
         self.mysql_store = MySQLFundamentalsStore()
+        self.routing = (routing or DataRoutingConfig.from_env()).with_mode(data_mode)
 
-        # Provider stack is pluggable; current defaults prioritize yfinance for prices
-        # and FMP for fundamentals.
         yf_provider = YFinanceProvider()
-        self.market_provider = ResilientMarketDataProvider([yf_provider])
+        gcloud_market = IBKRGcloudMarketProvider(
+            base_url=self.routing.gcloud_base_url or None,
+            api_key=self.routing.gcloud_api_key or None,
+        )
+        local_market = IBKRLocalMarketProvider(
+            host=self.routing.local_gateway_host,
+            port=self.routing.local_gateway_port,
+            client_id=self.routing.local_gateway_client_id,
+        )
+        market_providers = {
+            "yfinance": yf_provider,
+            "gcloud": gcloud_market,
+            "ibkr_local": local_market,
+        }
+        self.market_provider_order = self.routing.daily_market_order()
+        active_market_providers = [
+            market_providers[name]
+            for name in self.market_provider_order
+            if getattr(market_providers[name], "_enabled", lambda: True)()
+        ]
+        self.market_provider = ResilientMarketDataProvider(active_market_providers)
 
-        ibkr_fund = IBKRGcloudFundamentalProvider()
-        fundamental_chain = [yf_provider, ibkr_fund, FMPProvider()]
-        # Filter out providers with no API key / no endpoint configured.
-        active_fundamentals = [p for p in fundamental_chain if getattr(p, "_enabled", lambda: True)()]
+        ibkr_fund = IBKRGcloudFundamentalProvider(
+            base_url=self.routing.gcloud_base_url or None,
+            api_key=self.routing.gcloud_api_key or None,
+        )
+        fundamental_providers = {
+            "yfinance": yf_provider,
+            "gcloud": ibkr_fund,
+            "fmp": FMPProvider(),
+        }
+        self.fundamental_provider_order = self.routing.fundamental_order()
+        active_fundamentals = [
+            fundamental_providers[name]
+            for name in self.fundamental_provider_order
+            if getattr(fundamental_providers[name], "_enabled", lambda: True)()
+        ]
         self.fundamental_provider = ResilientFundamentalProvider(active_fundamentals)
     
     def get_connection(self) -> sqlite3.Connection:

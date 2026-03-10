@@ -32,6 +32,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from src.data.providers.resilient import fetch_ibkr_gcloud_ohlcv
+from src.data.routing import DataRoutingConfig
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -221,6 +223,45 @@ def _read_ibkr(symbol: str, days: int) -> Optional[pd.DataFrame]:
         return None
 
 
+def _read_gcloud(symbol: str, days: int, routing: DataRoutingConfig) -> Optional[pd.DataFrame]:
+    """Try to read 1m bars from the GCP IBKR-backed API."""
+    if not routing.gcloud_enabled:
+        return None
+
+    try:
+        data = fetch_ibkr_gcloud_ohlcv(
+            symbol=symbol,
+            period=f"{max(1, days)}d",
+            interval="1m",
+            base_url=routing.gcloud_base_url,
+            api_key=routing.gcloud_api_key,
+        )
+        if data is None or data.empty or "Date" not in data.columns:
+            return None
+
+        df = data.copy()
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True)
+        df = df.dropna(subset=["Date"])
+        if df.empty:
+            return None
+
+        df = df.rename(
+            columns={
+                "Open": "open",
+                "High": "high",
+                "Low": "low",
+                "Close": "close",
+                "Volume": "volume",
+            }
+        )
+        df = df[["Date", "open", "high", "low", "close", "volume"]].copy()
+        df = df.set_index("Date")
+        df.index = df.index.tz_convert("US/Eastern")
+        return df
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # yfinance download
 # ---------------------------------------------------------------------------
@@ -297,6 +338,7 @@ def get_intraday_1m(
         Index: DatetimeIndex in US/Eastern timezone
     """
     conn = _get_conn(db_path)
+    routing = DataRoutingConfig.from_env()
 
     # 1. Check local cache
     if not force_refresh:
@@ -307,26 +349,34 @@ def get_intraday_1m(
             conn.close()
             return cached
 
-    # 2. Try IBKR DB
-    ibkr_df = _read_ibkr(symbol, days)
-    if ibkr_df is not None and len(ibkr_df) >= 100:
-        _write_cache(symbol, ibkr_df, "ibkr", conn)
-        if rth_only:
-            ibkr_df = _filter_rth(ibkr_df)
-        conn.close()
-        return ibkr_df
-
-    # 3. Fall back to yfinance
-    yf_df = _download_yfinance(symbol, days)
-    if not yf_df.empty:
-        _write_cache(symbol, yf_df, "yfinance", conn)
+    for source in routing.intraday_order():
+        if source == "gcloud":
+            gcloud_df = _read_gcloud(symbol, days, routing)
+            if gcloud_df is not None and len(gcloud_df) >= 100:
+                _write_cache(symbol, gcloud_df, "ibkr_gcloud", conn)
+                if rth_only:
+                    gcloud_df = _filter_rth(gcloud_df)
+                conn.close()
+                return gcloud_df
+        elif source == "ibkr_db":
+            ibkr_df = _read_ibkr(symbol, days)
+            if ibkr_df is not None and len(ibkr_df) >= 100:
+                _write_cache(symbol, ibkr_df, "ibkr", conn)
+                if rth_only:
+                    ibkr_df = _filter_rth(ibkr_df)
+                conn.close()
+                return ibkr_df
+        elif source == "yfinance":
+            yf_df = _download_yfinance(symbol, days)
+            if not yf_df.empty:
+                _write_cache(symbol, yf_df, "yfinance", conn)
+                conn.close()
+                if rth_only:
+                    yf_df = _filter_rth(yf_df)
+                return yf_df
 
     conn.close()
-
-    if rth_only and not yf_df.empty:
-        yf_df = _filter_rth(yf_df)
-
-    return yf_df
+    return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
 
 def get_intraday_1m_batch(
