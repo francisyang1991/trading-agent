@@ -1,0 +1,2 @@
+level,key,side,trade_count,win_rate,profit_factor,total_return,buy_hold_return,alpha_pct,cagr,sharpe,max_dd
+overall,CAT,long,60,45.0,7.531447548944316,-0.29244156620148454,-2.6803141383545226,2.387872572153038,0.0,-0.7163698977800768,2.4355891572456234

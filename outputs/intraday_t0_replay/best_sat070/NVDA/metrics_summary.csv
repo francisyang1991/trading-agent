@@ -1,0 +1,2 @@
+level,key,side,trade_count,win_rate,profit_factor,total_return,buy_hold_return,alpha_pct,cagr,sharpe,max_dd
+overall,NVDA,long,51,52.94117647058824,1.3559169571405776,-0.5163794037987057,-5.431951096186738,4.915571692388033,0.0,-4.517334748195486,0.9753219197331636

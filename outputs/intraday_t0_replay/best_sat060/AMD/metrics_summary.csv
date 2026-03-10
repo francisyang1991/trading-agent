@@ -1,0 +1,2 @@
+level,key,side,trade_count,win_rate,profit_factor,total_return,buy_hold_return,alpha_pct,cagr,sharpe,max_dd
+overall,AMD,long,45,48.888888888888886,6.238023519787707,0.2922729709071037,0.13917115519317402,0.15310181571392967,0.0,1.504099347271135,0.7593759595125129
