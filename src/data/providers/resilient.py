@@ -137,6 +137,16 @@ def fetch_ibkr_gcloud_daily_ohlcv(
     base_url: str,
     api_key: str,
 ) -> Optional[pd.DataFrame]:
+    return fetch_ibkr_gcloud_ohlcv(symbol, period, "1d", base_url, api_key)
+
+
+def fetch_ibkr_gcloud_ohlcv(
+    symbol: str,
+    period: str,
+    interval: str,
+    base_url: str,
+    api_key: str,
+) -> Optional[pd.DataFrame]:
     endpoints = [
         f"{base_url}/api/history/{symbol}",
         f"{base_url}/api/ohlcv/{symbol}",
@@ -145,7 +155,7 @@ def fetch_ibkr_gcloud_daily_ohlcv(
     for url in endpoints:
         try:
             req = Request(
-                url + "?" + urlencode({"period": period, "interval": "1d"}),
+                url + "?" + urlencode({"period": period, "interval": interval}),
                 headers={"X-API-Key": api_key},
             )
             with urlopen(req, timeout=20) as resp:
@@ -169,7 +179,10 @@ def fetch_ibkr_gcloud_daily_ohlcv(
                 ren[cols["date"]] = "Date"
             data = data.rename(columns=ren)
             if "Date" in data.columns and "Close" in data.columns:
-                data["Date"] = pd.to_datetime(data["Date"]).dt.date
+                if str(interval).lower() in {"1d", "1day", "1 day"}:
+                    data["Date"] = pd.to_datetime(data["Date"], errors="coerce").dt.date
+                else:
+                    data["Date"] = pd.to_datetime(data["Date"], errors="coerce", utc=True)
                 return data
         except Exception:
             continue

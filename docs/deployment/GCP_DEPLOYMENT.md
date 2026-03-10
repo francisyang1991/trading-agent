@@ -320,16 +320,35 @@ Create alerts for:
 ### Automated Backups
 
 ```bash
-# Add to crontab
-0 0 * * * docker exec trading-agent sqlite3 /app/data/stock_cache.db ".backup /app/data/backup_$(date +\%Y\%m\%d).db"
-0 1 * * * gsutil cp /home/user/trading-agent/data/backup_*.db gs://your-bucket/backups/
+# Configure runtime snapshot target
+cp env.live.example env.live.list
+# Set SAIYAN_DATA_ARCHIVE_URI=gs://your-bucket/saiyan-data
+
+# Export once manually
+bash scripts/export_data_snapshot.sh
+
+# Install daily snapshot export cron (default: 01:30)
+bash scripts/setup_data_snapshot_cron.sh
+
+# Optional: override schedule before install
+SAIYAN_DATA_SNAPSHOT_CRON="0 2 * * *" bash scripts/setup_data_snapshot_cron.sh
 ```
+
+The snapshot export writes a restorable tarball with the local SQLite caches and ignored runtime data directories, then uploads it to `SAIYAN_DATA_ARCHIVE_URI`. The cron wrapper logs to `logs/data_snapshot_export_*.log`.
 
 ### Disaster Recovery Checklist
 
 1. VM fails → Create new VM from snapshot
-2. Gateway token expires → Re-authenticate via VNC
-3. Data corruption → Restore from Cloud Storage backup
+2. Restore latest runtime data locally:
+
+```bash
+cp env.live.example env.live.list
+# Set SAIYAN_DATA_ARCHIVE_URI=gs://your-bucket/saiyan-data
+bash scripts/pull_data_snapshot.sh
+```
+
+3. Gateway token expires → Re-authenticate via VNC
+4. Data corruption → Restore from the latest Cloud Storage data snapshot
 
 ---
 
@@ -351,7 +370,7 @@ Create alerts for:
 - [ ] Use IAP tunnel (never expose ports publicly)
 - [ ] Store IB credentials in Secret Manager
 - [ ] Enable VPC firewall logging
-- [ ] Set up daily backup to Cloud Storage
+- [ ] Set up `SAIYAN_DATA_ARCHIVE_URI` and daily snapshot export cron
 - [ ] Use paper trading for first 2 weeks
 - [ ] Review IB activity logs daily
 - [ ] Enable Cloud Audit Logs

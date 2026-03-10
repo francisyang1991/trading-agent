@@ -5,7 +5,7 @@ Data Layer Module
 This module provides data access for the trading agent.
 
 DataManager implementations:
-1. CachedDataManager (src/data_manager.py) - SQLite cache + yfinance, for daily data
+1. CachedDataManager (src/data_manager.py) - SQLite cache + environment-aware provider chain
 2. IBKRDataManager (src/data/ibkr_data_manager.py) - IBKR multi-timeframe, for live trading
 
 IBKR Clients (choose based on deployment):
@@ -47,7 +47,7 @@ def get_data_manager(mode: str = "cached", **kwargs):
     
     Args:
         mode: One of "cached", "ibkr", or "backtest"
-            - "cached": SQLite cache + yfinance (for scanning, backtesting)
+            - "cached": SQLite cache + routed providers (for scanning, research, local dev)
             - "ibkr": IBKR multi-timeframe (for live trading)
             - "backtest": Backtest-specialized manager with step/replay
         **kwargs: Additional arguments passed to the manager constructor
