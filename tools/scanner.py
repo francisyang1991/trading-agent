@@ -1305,10 +1305,12 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
                 buy_zone_low = max(ema50, price - 2.0 * atr)
             stop_loss = min(ema50, buy_zone_low) - 1.5 * atr
         else:
-            # SHORT strategies or STAY_CASH
-            buy_zone_high = ema21 * 0.98
-            buy_zone_low = ema21 * 0.95
-            stop_loss = ema21 * 0.90
+            # SHORT strategies or STAY_CASH — use short-appropriate levels
+            # Entry: current price (short at market)
+            # Buy zone repurposed as short profit zone (below entry)
+            buy_zone_high = price
+            buy_zone_low = price - 2.0 * atr
+            stop_loss = price + 2.0 * atr
 
         # Guard: ensure buy_zone_low <= buy_zone_high
         if buy_zone_low > buy_zone_high:
@@ -1326,8 +1328,9 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
             target_1 = max(ema21, price + 1.0 * atr)
             target_2 = max(ema9, price + 2.0 * atr)
         else:
-            target_1 = price + 1.5 * atr
-            target_2 = price + 3 * atr
+            # SHORT / STAY_CASH — targets below entry
+            target_1 = price - 1.5 * atr
+            target_2 = price - 3.0 * atr
         
         # Expected value
         dist = estimate_distribution(data)
