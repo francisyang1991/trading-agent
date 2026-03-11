@@ -793,6 +793,11 @@ class StockScan:
     vpes_value: float = 0.0              # 3-bar EMA smoothed VPES
     vpes_cumulative: float = 0.0         # 5-bar cumulative VPES
 
+    # Strategy scoring — all long strategies evaluated
+    best_long_strategy: Optional[str] = None       # Name of highest-scoring long strategy
+    best_long_score: float = 0.0                   # Its tech score
+    long_strategy_scores: Dict = field(default_factory=dict)  # All 4 scores
+
     # Market context
     market_vix: Optional[float] = None
     market_regime: Optional[str] = None      # BULL / NEUTRAL / BEAR / CRISIS
@@ -1212,11 +1217,60 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
         else:
             vol_cat = VolCategory.LOW
         
-        # Get strategy from matrix
-        strategy, base_size, stop_pct, tp_pct = STRATEGY_MATRIX.get(
+        # ── VPES (calculated early for tech score evaluation) ──
+        vpes_val, vpes_cum = calculate_vpes(data)
+
+        # ── Evaluate all long strategies via tech score ──
+        _LONG_STRATS = ["Trend Following", "Swing Trade", "Mean Reversion", "Trailing Stop"]
+        _STRAT_ENUM_MAP = {
+            "Trend Following": Strategy.TREND_FOLLOWING,
+            "Swing Trade": Strategy.SWING_TRADE,
+            "Mean Reversion": Strategy.MEAN_REVERSION,
+            "Trailing Stop": Strategy.TRAILING_STOP,
+        }
+        _STRAT_DEFAULT_SIZING = {
+            # (base_size, stop_pct, tp_pct) — conservative defaults per strategy
+            Strategy.TREND_FOLLOWING: (0.12, 0.08, 0.20),
+            Strategy.SWING_TRADE: (0.10, 0.08, 0.15),
+            Strategy.MEAN_REVERSION: (0.10, 0.06, 0.10),
+            Strategy.TRAILING_STOP: (0.10, 0.12, 0.35),
+            Strategy.BUY_HOLD: (0.12, 0.10, 0.50),
+        }
+
+        long_strategy_scores: Dict[str, float] = {}
+        for _strat_name in _LONG_STRATS:
+            _score, _ = calculate_tech_score(
+                strategy=_strat_name,
+                action="BUY",
+                rsi=rsi, ema9=ema9, ema21=ema21, ema50=ema50,
+                price=price, momentum_3m=momentum_3m, momentum_6m=momentum_6m,
+                volatility=volatility, vol_category=vol_cat.value,
+                dist_ema21=dist_ema21, vpes_ema=vpes_val, vpes_cumulative=vpes_cum,
+            )
+            long_strategy_scores[_strat_name] = _score
+
+        best_long_strat_name = max(long_strategy_scores, key=long_strategy_scores.get)  # type: ignore[arg-type]
+        best_long_score = long_strategy_scores[best_long_strat_name]
+        best_long_strat = _STRAT_ENUM_MAP[best_long_strat_name]
+
+        # Get matrix strategy (regime×volatility default)
+        matrix_strategy, matrix_size, matrix_stop, matrix_tp = STRATEGY_MATRIX.get(
             (regime, vol_cat), (Strategy.STAY_CASH, 0, 0, 0)
         )
-        
+
+        # ── Strategy selection: tech-score-driven ──
+        # Use the best-scoring long strategy if its score is MODERATE+ (≥60),
+        # otherwise fall back to the regime matrix.
+        # SHORT strategies remain regime-driven (handled later in action logic).
+        if best_long_score >= 60:
+            strategy = best_long_strat
+            base_size, stop_pct, tp_pct = _STRAT_DEFAULT_SIZING.get(
+                strategy, (0.10, 0.08, 0.15)
+            )
+        else:
+            strategy = matrix_strategy
+            base_size, stop_pct, tp_pct = matrix_size, matrix_stop, matrix_tp
+
         # Calculate entry zones — STRATEGY-AWARE
         # Each strategy has a different entry philosophy based on price vs EMA position
         if strategy in [Strategy.TREND_FOLLOWING, Strategy.TRAILING_STOP, Strategy.BUY_HOLD]:
@@ -1365,7 +1419,10 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
                 reasoning=reasoning,
                 score=score,
                 volume_pullback_signal=True,
-                volume_pullback_data=volume_pullback
+                volume_pullback_data=volume_pullback,
+                best_long_strategy=best_long_strat_name,
+                best_long_score=best_long_score,
+                long_strategy_scores=long_strategy_scores,
             )
         
         # ================================================================
@@ -1456,6 +1513,23 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
                     f"SHORT downtrend: {momentum_6m:+.1f}% 6M momentum, RSI {rsi:.0f} above neutral, "
                     f"{dist_ema21:+.1f}% above EMA21. Reduced size."
                 )
+            elif (best_long_strat == Strategy.MEAN_REVERSION
+                  and best_long_score >= 60
+                  and rsi < 40
+                  and dist_ema21 < -2.0
+                  and ev > 0):
+                # Mean Reversion LONG in downtrend: oversold, below EMA21, MR score high
+                action = Action.BUY.value
+                entry_signal = "MR_LONG_DOWNTREND"
+                strategy = Strategy.MEAN_REVERSION
+                base_size, stop_pct, tp_pct = _STRAT_DEFAULT_SIZING[Strategy.MEAN_REVERSION]
+                # Reduce size in downtrend (counter-trend = higher risk)
+                base_size *= 0.6
+                reasoning = (
+                    f"Mean Reversion LONG: Downtrend but oversold (RSI {rsi:.0f}, "
+                    f"{dist_ema21:+.1f}% below EMA21). MR score {best_long_score:.0f} "
+                    f"(MODERATE+). Counter-trend, reduced size."
+                )
             else:
                 # Downtrend but RSI too low or below EMA — wait for bounce
                 action = Action.WAIT.value
@@ -1530,22 +1604,28 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
             entry_signal = "BELOW_ZONE"
             reasoning = f"Below buy zone - wait for stabilization. Could be falling knife."
 
-        # Sideways with BUY opportunity near support (mean reversion long)
-        elif regime == Regime.SIDEWAYS and rsi < 35 and dist_ema21 < -3.0:
-            if ev > 0.3:
-                action = Action.BUY.value
-                entry_signal = "MR_LONG"
-                reasoning = (
-                    f"Mean reversion LONG: Sideways regime, RSI {rsi:.0f} oversold, "
-                    f"{dist_ema21:+.1f}% below EMA21. Buy the dip, target reversion."
-                )
-            else:
-                action = Action.WAIT.value
-                entry_signal = "WEAK_SETUP"
-                reasoning = f"Sideways oversold but weak EV ({ev:.2f}%). Wait for better setup."
+        # Sideways/Weak with BUY opportunity — mean reversion long (tech-score-driven)
+        elif (regime in [Regime.SIDEWAYS, Regime.WEAK_UP, Regime.DOWNTREND]
+              and best_long_strat == Strategy.MEAN_REVERSION
+              and best_long_score >= 60
+              and rsi < 45
+              and dist_ema21 < 0
+              and ev > 0):
+            action = Action.BUY.value
+            entry_signal = "MR_LONG"
+            strategy = Strategy.MEAN_REVERSION
+            base_size, stop_pct, tp_pct = _STRAT_DEFAULT_SIZING[Strategy.MEAN_REVERSION]
+            # Reduce size for counter-trend regimes
+            if regime == Regime.DOWNTREND:
+                base_size *= 0.6
+            reasoning = (
+                f"Mean Reversion LONG: {regime.value} regime, RSI {rsi:.0f} oversold, "
+                f"{dist_ema21:+.1f}% below EMA21. MR score {best_long_score:.0f}. "
+                f"Target reversion to EMA21."
+            )
 
-        # WAIT: Sideways regime with weak metrics
-        elif regime == Regime.SIDEWAYS and (ev < 0.5 or rr < 1.5):
+        # WAIT: Sideways regime with weak metrics (only when MR score is low)
+        elif regime == Regime.SIDEWAYS and (ev < 0.5 or rr < 1.5) and best_long_score < 60:
             action = Action.WAIT.value
             entry_signal = "WEAK_SETUP"
             reasoning = f"Sideways regime with weak EV ({ev:.2f}%) or R:R ({rr:.1f}x)."
@@ -1601,13 +1681,15 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
         momentum_pts = mom_1w_pts + mom_1m_pts + mom_3m_pts  # ±20 pts total
         rr_pts = min(10, max(0, (rr - 1) * 5))  # 1:1=0, 2:1=5, 3:1=10
 
-        score = base_pts + momentum_pts + rsi_pts + macd_pts + rr_pts
+        # Factor best strategy tech score into composite (up to ±15 pts)
+        # Best score 60 → +0, 80 → +10, 100 → +15. Below 40 → -5.
+        tech_bonus = max(-5, min(15, (best_long_score - 60) * 0.5)) if best_long_score >= 40 else -5
+
+        score = base_pts + momentum_pts + rsi_pts + macd_pts + rr_pts + tech_bonus
         score = max(0, min(100, score))
 
-        # ── VPES (Volume-Price Expansion Score) ──
-        vpes_val, vpes_cum = calculate_vpes(data)
-
         # ── Technical Confidence Score (6 components incl. VPES) ──
+        # VPES already computed above (vpes_val, vpes_cum)
         market = fetch_market_context()
         raw_tech, tech_components = calculate_tech_score(
             strategy=strategy.value,
@@ -1687,11 +1769,14 @@ def scan_stock(symbol: str) -> Optional[StockScan]:
             tech_components=tech_components,
             vpes_value=vpes_val,
             vpes_cumulative=vpes_cum,
+            best_long_strategy=best_long_strat_name,
+            best_long_score=best_long_score,
+            long_strategy_scores=long_strategy_scores,
             market_vix=market.vix,
             market_regime=market.market_regime,
             market_risk_appetite=market.risk_appetite,
         )
-        
+
     except Exception as e:
         print(f"   ⚠️ Error: {symbol} - {e}")
         return None
